@@ -1,5 +1,6 @@
 """Fill the DM05 release's missing dlc task from the RoboDojo HDF5 source."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,15 @@ def main() -> int:
             for ep in episodes for cam in ("cam_head", "cam_left_wrist", "cam_right_wrist")
         )
     if not complete():
+        follower = ROOT / "dlc_convert_follow.pid"
+        if follower.is_file():
+            try:
+                os.kill(int(follower.read_text()), 0)
+            except (OSError, ValueError):
+                pass
+            else:
+                print("dlc incremental conversion is still running", flush=True)
+                return 1
         subprocess.run([
             "python3", str(REPO / "scripts/convert_robodojo_dm05.py"),
             "--task", TASK, "--source-root", str(source),
