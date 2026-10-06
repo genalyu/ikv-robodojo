@@ -961,6 +961,7 @@ class DualSystemIDMArchitecture(BaseWAMArchitecture):
         ikv_patch_capacity: Optional[int] = None,
         ikv_top_k: Optional[int] = None,
         ikv_motion_threshold: Optional[float] = None,
+        ikv_motion_only: Optional[bool] = None,
         ikv_dino_features=None,
     ) -> dict:
         """Two-stage IDM generation.
@@ -1001,6 +1002,7 @@ class DualSystemIDMArchitecture(BaseWAMArchitecture):
                 "ikv_patch_capacity": ikv_patch_capacity,
                 "ikv_top_k": ikv_top_k,
                 "ikv_motion_threshold": ikv_motion_threshold,
+                "ikv_motion_only": ikv_motion_only,
                 "ikv_dino_features": ikv_dino_features,
             } if ikv_rgb_images is not None else {}),
         )

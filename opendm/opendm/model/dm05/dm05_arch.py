@@ -79,9 +79,10 @@ class DM05Config(DMBaseConfig):
         chunk_size: int = 50,
         tie_word_embeddings: bool = True,
         ikv_rgb_enabled: bool = False,
-        ikv_history_capacity: int = 128,
-        ikv_top_k: int = 64,
+        ikv_history_capacity: int = 320,
+        ikv_top_k: int = 320,
         ikv_motion_threshold: float = 0.04,
+        ikv_motion_only: bool = False,
         ikv_dino_model_path: str | None = None,
         ikv_require_dino: bool = False,
         **kwargs,
@@ -100,6 +101,7 @@ class DM05Config(DMBaseConfig):
         self.ikv_history_capacity = ikv_history_capacity
         self.ikv_top_k = ikv_top_k
         self.ikv_motion_threshold = ikv_motion_threshold
+        self.ikv_motion_only = ikv_motion_only
         self.ikv_dino_model_path = ikv_dino_model_path
         self.ikv_require_dino = ikv_require_dino
 
@@ -580,6 +582,7 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
             capacity=self.config.ikv_history_capacity,
             top_k=self.config.ikv_top_k,
             motion_threshold=self.config.ikv_motion_threshold,
+            motion_only=self.config.ikv_motion_only,
             dino_features=ikv_dino_features,
             reference_dino=ikv_reference_dino,
             dino_model_path=self.config.ikv_dino_model_path,
@@ -900,6 +903,8 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
         history_rgb_values: torch.Tensor | None = None,
         current_rgb_values: torch.Tensor | None = None,
         history_mask: torch.BoolTensor | None = None,
+        history_frame_counts: torch.Tensor | None = None,
+        history_features: torch.Tensor | None = None,
         **kwargs,
     ) -> Gemma3CausalLMOutputWithPast:
         """Run the training forward pass and compute flow-matching loss."""
@@ -907,11 +912,18 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
         if self.precision_policy == FP32_MIXED_PRECISION_POLICY:
             action = action.to(dtype=MODEL_DTYPE)
 
-        input_ids = self._ikv_prefix_ids(
-            input_ids, history_mask, history_pixel_values,
-            history_rgb_values, current_rgb_values,
-            kwargs.get("ikv_dino_features"), kwargs.get("ikv_reference_dino")
-        )
+        if history_frame_counts is not None:
+            from opendm.model.dm05.online_history import prepare_training_memory, pack_history_features
+            features = prepare_training_memory(
+                self, history_pixel_values, history_rgb_values, history_frame_counts)
+            input_ids, token_type_ids, history_mask, history_features = pack_history_features(
+                input_ids, token_type_ids, features)
+        elif history_features is None and kwargs.get("ikv_kv_request") is None:
+            input_ids = self._ikv_prefix_ids(
+                input_ids, history_mask, history_pixel_values,
+                history_rgb_values, current_rgb_values,
+                kwargs.get("ikv_dino_features"), kwargs.get("ikv_reference_dino")
+            )
 
         # Step 1: prefix forward — history via unused0 scatter, current views via VLM.
         kv_cache, prefix_hidden_states = self._compute_prefix_cache(
@@ -921,8 +933,15 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
             token_type_ids=token_type_ids,
             history_pixel_values=history_pixel_values,
             history_mask=history_mask,
+            history_features=history_features,
             cache_cls=VLADynamicCache,
+            full_cache=kwargs.get("ikv_kv_request") is not None,
         )
+        kv_transaction = None
+        if kwargs.get("ikv_kv_request") is not None:
+            from opendm.model.dm05.persistent_kv import splice_dm05_kv
+            input_ids, kv_transaction = splice_dm05_kv(
+                self, kv_cache, input_ids, attention_mask, history_mask, kwargs["ikv_kv_request"])
         prefix_len = prefix_hidden_states.shape[1]
 
         # Step 2: run suffix forward for flow matching.
@@ -991,6 +1010,11 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
             # the action expert also consumes KV tensors written into the cache.
             loss = loss + prefix_hidden_states.sum(dtype=torch.float32) * 0.0
 
+        if kv_transaction is not None:
+            if not torch.isfinite(loss):
+                raise RuntimeError("nonfinite streaming loss; persistent KV was not committed")
+            from opendm.model.dm05.persistent_kv import commit_dm05
+            commit_dm05(kv_transaction)
         return DM05OutputWithPast(
             loss=loss,
             fm_loss=fm_loss,
@@ -1072,11 +1096,19 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
         history_mask: torch.BoolTensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        input_ids = self._ikv_prefix_ids(
-            input_ids, history_mask, history_pixel_values,
-            history_rgb_values, current_rgb_values,
-            kwargs.get("ikv_dino_features"), kwargs.get("ikv_reference_dino")
-        )
+        history_features = kwargs.get("history_features")
+        if kwargs.get("history_frame_counts") is not None:
+            from opendm.model.dm05.online_history import prepare_training_memory, pack_history_features
+            features = prepare_training_memory(
+                self, history_pixel_values, history_rgb_values, kwargs["history_frame_counts"])
+            input_ids, token_type_ids, history_mask, history_features = pack_history_features(
+                input_ids, token_type_ids, features)
+        elif history_features is None and kwargs.get("ikv_kv_request") is None:
+            input_ids = self._ikv_prefix_ids(
+                input_ids, history_mask, history_pixel_values,
+                history_rgb_values, current_rgb_values,
+                kwargs.get("ikv_dino_features"), kwargs.get("ikv_reference_dino")
+            )
         kv_cache, prefix_hidden_states = self._compute_prefix_cache(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1084,8 +1116,15 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
             token_type_ids=token_type_ids,
             history_pixel_values=history_pixel_values,
             history_mask=history_mask,
+            history_features=history_features,
             cache_cls=DynamicCache,
+            full_cache=kwargs.get("ikv_kv_request") is not None,
         )
+        kv_transaction = None
+        if kwargs.get("ikv_kv_request") is not None:
+            from opendm.model.dm05.persistent_kv import splice_dm05_kv
+            input_ids, kv_transaction = splice_dm05_kv(
+                self, kv_cache, input_ids, attention_mask, history_mask, kwargs["ikv_kv_request"])
         if self.config.ikv_rgb_enabled:
             kv_cache, prefix_hidden_states, input_ids = self._compact_ikv_cache(
                 kv_cache, prefix_hidden_states, input_ids, attention_mask
@@ -1104,7 +1143,7 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
             device=device,
             dtype=dtype,
         )
-        if self._can_use_suffix_graph(x_t):
+        if kv_transaction is None and self._can_use_suffix_graph(x_t):
             graph_result = self._run_suffix_graph(
                 input_ids=input_ids,
                 kv_cache=kv_cache,
@@ -1158,6 +1197,10 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
             v_t = self._action_output_proj(suffix_out)
             x_t = x_t + v_t * dt
             time_val += dt
+        if not torch.isfinite(x_t).all():
+            raise RuntimeError("nonfinite DM05 actions; persistent KV was not committed")
+        from opendm.model.dm05.persistent_kv import commit_dm05
+        commit_dm05(kv_transaction)
         return x_t
 
     def _can_use_suffix_graph(self, initial_noise: torch.Tensor) -> bool:
@@ -1518,6 +1561,8 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
         history_pixel_values: torch.Tensor | None = None,
         history_mask: torch.BoolTensor | None = None,
         cache_cls: type[Cache] = DynamicCache,
+        history_features: torch.Tensor | None = None,
+        full_cache: bool = False,
     ) -> tuple[Cache, torch.Tensor]:
         """Fill VLM KV cache; history images are injected separately from current views.
 
@@ -1527,12 +1572,12 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
         (dexbotic-open parity). Current camera images still go through the
         standard Gemma3 multimodal path (``pixel_values`` + ``token_type_ids``).
         """
-        kv_cache = cache_cls(config=self.model.language_model.config)
+        kv_cache = cache_cls(config=None if full_cache else self.model.language_model.config)
         prefix_inputs_embeds = None
         vlm_model = self.model.vlm.model
         embed_tokens = vlm_model.get_input_embeddings()
         has_history_pixels = (
-            history_pixel_values is not None
+            (history_pixel_values is not None or history_features is not None)
             and history_mask is not None
             and bool(history_mask.any().item())
         )
@@ -1545,26 +1590,12 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
                 inputs_embeds[input_ids == HISTORY_PAD_TOKEN_ID] = 0
 
             if has_history_pixels:
-                pixels = history_pixel_values.to(
-                    device=inputs_embeds.device,
-                    dtype=next(vlm_model.vision_tower.parameters()).dtype,
-                )
-                image_features = vlm_model.get_image_features(
-                    pixels, return_dict=True
-                ).pooler_output
-
-                spatial = int(image_features.shape[1] ** 0.5)
-                hidden = image_features.shape[-1]
-                grid = image_features.view(-1, spatial, spatial, hidden).permute(
-                    0, 3, 1, 2
-                )
-                grid = F.adaptive_avg_pool2d(
-                    grid, output_size=(HISTORY_POOL_SIZE, HISTORY_POOL_SIZE)
-                )
-                image_features = grid.permute(0, 2, 3, 1).reshape(
-                    -1, HISTORY_POOL_SIZE * HISTORY_POOL_SIZE, hidden
-                )
-                image_features = image_features.to(dtype=inputs_embeds.dtype)
+                from opendm.model.dm05.online_history import encode_policy_history
+                image_features = (encode_policy_history(self, history_pixel_values).flatten(0, 1)
+                                  if history_features is None else history_features)
+                image_features = image_features.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+                if image_features.shape != (int(history_mask.sum()), inputs_embeds.shape[-1]):
+                    raise ValueError("history feature count/width does not match prefix slots")
 
                 history_mask_expanded = history_mask.unsqueeze(-1).expand_as(
                     inputs_embeds

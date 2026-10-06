@@ -89,6 +89,7 @@ class DM05DataConfig(_DM05DataConfig):
         processor,
         action_horizon: int,
         tokenizer_max_length: int = 1536,
+        include_history_rgb: bool = False,
     ) -> tuple:
         dataset_info = self._dataset_info()
         image_keys = dataset_info["image_keys"]
@@ -100,10 +101,11 @@ class DM05DataConfig(_DM05DataConfig):
                 LoadHistory(
                     image_key=image_keys[0],
                     image_dir=dataset_info["image_dir"],
-                    max_history_images=HISTORY_SLOTS,
+                    max_history_images=None if include_history_rgb else HISTORY_SLOTS,
                 ),
                 PixelTransform(
                     transform_pipeline=TrainingTransformPipeline(p=0.5),
+                    consistent_history=include_history_rgb,
                 ),
                 Normalize(
                     norm_stats_path=str(self.norm_stats_path(action_horizon)),
@@ -118,6 +120,8 @@ class DM05DataConfig(_DM05DataConfig):
                     image_prompts=image_prompts,
                     add_state=self.add_state,
                     is_history=True,
+                    include_history_rgb=include_history_rgb,
+                    online_history=include_history_rgb,
                     max_history_images=HISTORY_SLOTS,
                 ),
                 PadAction(32),

@@ -1,0 +1,106 @@
+"""Run six four-GPU RoboDojo jobs after the existing neosim IKV job."""
+import fcntl
+import json
+import os
+import subprocess
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path("/mnt/cfs/9wt59p/genalyu/robodojo-posttrain")
+REPO = Path("/mnt/cfs/9wt59p/genalyu/ikv-robodojo")
+NEOSIM = Path("/mnt/cfs/9wt59p/genalyu/ikv-task-data/neosim_mem_tactile_chip_selection")
+NEOSIM_DONE = NEOSIM / "runs/ikv/checkpoints/checkpoint_step_2000/training_state/complete.json"
+ORDER = (
+    ("dm05_baseline", "launch_dm05.sh", "baseline"),
+    ("dm05_ikv", "launch_dm05.sh", "ikv"),
+    ("openwam_baseline", "launch_openwam.sh", "baseline"),
+    ("openwam_ikv", "launch_openwam.sh", "ikv"),
+    ("pi05_baseline", "launch_pi05.sh", "baseline"),
+    ("pi05_ikv", "launch_pi05.sh", "ikv"),
+)
+
+
+def write_status(**fields):
+    path = ROOT / "queue_status.json"
+    current = json.loads(path.read_text()) if path.exists() else {}
+    current.update(fields, updated_at=datetime.now(timezone.utc).isoformat())
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(current, indent=2))
+    tmp.replace(path)
+
+
+def live_neosim():
+    result = subprocess.run(
+        ["pgrep", "-f", "python -u -m n0_twam.train.*neosim_mem_tactile_chip_selection"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def gpu_free():
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    used = [int(line.strip()) for line in result.stdout.splitlines()]
+    return len(used) == 4 and all(x < 2000 for x in used)
+
+
+def ready():
+    marker = ROOT / "preflight_ready.json"
+    if not marker.is_file():
+        return False
+    info = json.loads(marker.read_text())
+    commit = subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip()
+    return info.get("commit") == commit and info.get("all_six_runs_validated") is True
+
+
+def main():
+    ROOT.mkdir(parents=True, exist_ok=True)
+    with (ROOT / "queue.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        while not (NEOSIM_DONE.is_file() and not live_neosim() and gpu_free() and ready()):
+            if not NEOSIM_DONE.is_file() or live_neosim():
+                state = "waiting_for_neosim_ikv"
+            elif not ready():
+                state = "waiting_for_preflight"
+            else:
+                state = "waiting_for_gpus"
+            write_status(state=state, order=[x[0] for x in ORDER])
+            time.sleep(60)
+        for run_id, launcher, mode in ORDER:
+            result_path = ROOT / "runs" / run_id / "run_complete.json"
+            if result_path.is_file():
+                result = json.loads(result_path.read_text())
+                if result.get("validated") is True:
+                    continue
+                raise RuntimeError(f"existing unvalidated completion: {run_id}")
+            if not gpu_free():
+                raise RuntimeError("four GPUs not free before " + run_id)
+            write_status(state="running", current=run_id)
+            log = ROOT / "logs" / f"{run_id}.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a") as output:
+                code = subprocess.run(
+                    ["bash", str(REPO / "scripts" / launcher), mode],
+                    cwd=REPO,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                ).returncode
+            if code:
+                write_status(state="failed", current=run_id, exit_code=code)
+                raise SystemExit(code)
+            if not result_path.is_file() or json.loads(result_path.read_text()).get("validated") is not True:
+                write_status(state="failed_validation", current=run_id)
+                raise RuntimeError(f"launcher did not validate: {run_id}")
+        write_status(state="complete", current=None)
+
+
+if __name__ == "__main__":
+    main()

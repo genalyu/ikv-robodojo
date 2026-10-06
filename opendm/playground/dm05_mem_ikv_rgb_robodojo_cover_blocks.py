@@ -14,8 +14,9 @@ from playground.dm05_mem_sft_robodojo_cover_blocks import (
 @dataclass
 class DM05ModelConfig(_DM05ModelConfig):
     ikv_rgb_enabled: bool = True
-    ikv_history_capacity: int = 128
-    ikv_top_k: int = 64
+    ikv_history_capacity: int = 320
+    ikv_top_k: int = 320
+    ikv_motion_only: bool = False
     ikv_motion_threshold: float = 0.04
     ikv_dino_model_path: str | None = None
     ikv_require_dino: bool = True

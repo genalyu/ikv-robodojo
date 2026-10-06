@@ -75,9 +75,10 @@ class DM05ModelConfig(Config):
     model_name_or_path: str | None = field(default="./checkpoints/DM05")
     chunk_size: int = field(default=50)
     ikv_rgb_enabled: bool = field(default=False)
-    ikv_history_capacity: int = field(default=128)
-    ikv_top_k: int = field(default=64)
+    ikv_history_capacity: int = field(default=320)
+    ikv_top_k: int = field(default=320)
     ikv_motion_threshold: float = field(default=0.04)
+    ikv_motion_only: bool = field(default=False)
     ikv_dino_model_path: str | None = field(default=None)
     ikv_require_dino: bool = field(default=False)
     precision_policy: Literal["bf16_mixed", "fp32_mixed"] = field(
@@ -106,6 +107,7 @@ class DM05ModelConfig(Config):
             "ikv_history_capacity": self.ikv_history_capacity,
             "ikv_top_k": self.ikv_top_k,
             "ikv_motion_threshold": self.ikv_motion_threshold,
+            "ikv_motion_only": self.ikv_motion_only,
             "ikv_dino_model_path": self.ikv_dino_model_path,
             "ikv_require_dino": self.ikv_require_dino,
         }
@@ -365,6 +367,7 @@ class DM05DataConfig(Config):
                 LoadHistory(
                     image_key=image_keys[0],
                     image_dir=dataset_info["image_dir"],
+                    max_history_images=None if include_history_rgb else 32,
                 )
             )
         pipeline_steps.extend(
@@ -386,6 +389,7 @@ class DM05DataConfig(Config):
                     add_state=self.add_state,
                     is_history=self.is_history,
                     include_history_rgb=include_history_rgb,
+                    online_history=include_history_rgb,
                 ),
                 PadAction(32),
             ]
@@ -871,6 +875,13 @@ class DM05InferenceConfig(Config):
         self.last_model_latency_sec = None
         original_state = data["state"]
         model_input = self.input_transform(data)
+        if data.get("history_features") is not None:
+            from opendm.model.dm05.online_history import pack_history_features
+            ids, types, mask, features = pack_history_features(
+                model_input["input_ids"], model_input["token_type_ids"],
+                [data["history_features"]])
+            model_input.update(input_ids=ids, token_type_ids=types, history_mask=mask,
+                               history_features=features)
         state = data["state"] if self.use_transformed_state else original_state
         inference_seed = os.environ.get("DM05_INFERENCE_SEED")
         if inference_seed is not None:
@@ -905,11 +916,13 @@ class DM05InferenceConfig(Config):
             "history_rgb_values": model_input.get("history_rgb_values"),
             "current_rgb_values": model_input.get("current_rgb_values"),
             "history_mask": model_input.get("history_mask"),
+            "history_features": model_input.get("history_features"),
+            "ikv_kv_request": data.get("ikv_kv_request"),
         }
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         model_t0 = time.perf_counter()
-        if self.backend == "fast":
+        if self.backend == "fast" and data.get("ikv_kv_request") is None:
             actions = self.fast_runtime.inference_action(
                 **inference_kwargs,
             )

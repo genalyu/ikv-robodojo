@@ -46,6 +46,7 @@ class WAMPolicy:
             raise ValueError("ikv_history_frames must be positive")
         self._ikv_history = deque(maxlen=history_frames)
         self._ikv_dino_history = deque(maxlen=history_frames)
+        self._ikv_kv_state = {}
         self._ikv_temporal_stride = 4
         if self._ikv_rgb_enabled:
             backbone = getattr(getattr(engine, "architecture", None), "video_backbone", None)
@@ -57,6 +58,8 @@ class WAMPolicy:
 
         self._execution_config = normalize_execution_config(execution_config)
         self._async = self._execution_config.enabled
+        if self._async and self._ikv_rgb_enabled:
+            raise ValueError("persistent KV currently requires synchronous episode execution")
         if self._async:
             self._executor = AsyncInferenceExecutor(
                 engine=engine,
@@ -94,6 +97,7 @@ class WAMPolicy:
 
     def reset(self):
         """Clear executor state between episodes."""
+        self._ikv_kv_state.clear()
         self._ikv_history.clear()
         self._ikv_dino_history.clear()
         self._executor.reset()
@@ -117,49 +121,12 @@ class WAMPolicy:
             # Single first frame — pipeline expects list[PIL.Image]
             conditions["first_frame_image"] = [img]
             if self._ikv_rgb_enabled:
-                self._ikv_history.append(img)
-                observed_history = list(self._ikv_history)
-                # The causal WAN VAE emits frame endpoints 0,4,8,... .
-                # Left-pad with the oldest real frame so the newest real RGB
-                # observation is always the final latent endpoint.
-                stride = self._ikv_temporal_stride
-                pad = (stride - (len(observed_history) - 1) % stride) % stride
-                history = [observed_history[0]] * pad + observed_history
-                conditions["first_frame_image"] = history
-                conditions["ikv_rgb_images"] = history
-                inf = self.cfg.inference
-                conditions["ikv_patch_capacity"] = int(getattr(inf, "ikv_patch_capacity", 512))
-                conditions["ikv_top_k"] = int(getattr(inf, "ikv_top_k", 128))
-                conditions["ikv_motion_threshold"] = float(getattr(inf, "ikv_motion_threshold", 0.04))
-                if obs.get("ikv_dino_features") is not None:
-                    import torch
-
-                    self._ikv_dino_history.clear()
-                    supplied = torch.as_tensor(obs["ikv_dino_features"])
-                    if supplied.shape[0] == len(observed_history):
-                        supplied = torch.cat((supplied[:1].expand(pad, *supplied.shape[1:]), supplied))
-                    conditions["ikv_dino_features"] = supplied
-                elif self._ikv_dino_model_path:
-                    from openwam.model.ikv_dino import encode_dino_grid
-                    import torch
-
-                    # Encode only the newly observed RGB frame. Prior DINO
-                    # indexes remain in the episode ring with their frames.
-                    if len(self._ikv_dino_history) < len(observed_history) - 1:
-                        self._ikv_dino_history.clear()
-                        self._ikv_dino_history.extend(encode_dino_grid(
-                            observed_history, checkpoint=self._ikv_dino_model_path, grid=(16, 16)
-                        ))
-                    else:
-                        self._ikv_dino_history.append(encode_dino_grid(
-                            [img], checkpoint=self._ikv_dino_model_path, grid=(16, 16)
-                        )[0])
-                    dino_history = list(self._ikv_dino_history)
-                    conditions["ikv_dino_features"] = torch.stack(
-                        [dino_history[0]] * pad + dino_history
-                    )
-                elif self._ikv_require_dino:
-                    raise ValueError("RGB IKV requires DINO features or a local DINOv2 checkpoint")
+                conditions['ikv_kv_state'] = self._ikv_kv_state
+                conditions['ikv_current_image'] = img
+                conditions['ikv_dino_model_path'] = self._ikv_dino_model_path
+                conditions['ikv_dino_features'] = obs.get('ikv_dino_features')
+                conditions['ikv_motion_only'] = bool(getattr(self.cfg.inference,'ikv_motion_only',False))
+                conditions['ikv_motion_threshold'] = float(getattr(self.cfg.inference,'ikv_motion_threshold',.04))
         if obs.get("prompt"):
             conditions["prompt"] = obs["prompt"]
         if "state" in obs and obs["state"] is not None:

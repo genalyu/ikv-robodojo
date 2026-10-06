@@ -29,7 +29,7 @@ def test_motion_patch_selection_and_shared_video_key_gate():
     frames[1] = Image.fromarray(np.full((32, 32, 3), 255, dtype=np.uint8))
     kept = selector.select_clean_prefix_patches(
         frames, clean_latent_frames=3, grid_height=4, grid_width=4,
-        capacity=32, top_k=8, motion_threshold=0.04, device="cpu",
+        capacity=32, top_k=8, motion_threshold=0.04, motion_only=True, device="cpu",
     )
     assert kept.shape == (48,)
     assert kept.sum() == 32
@@ -83,7 +83,7 @@ def test_dino_grid_is_frozen_index_metadata(monkeypatch):
     assert torch.equal(grid, torch.ones_like(grid))
 
 
-def test_policy_aligns_latest_real_rgb_to_causal_endpoint(monkeypatch):
+def test_policy_keeps_single_current_frame_and_persistent_bank(monkeypatch):
     root = types.ModuleType("openwam")
     root.__path__ = []
     deploy = types.ModuleType("openwam.deploy")
@@ -120,6 +120,38 @@ def test_policy_aligns_latest_real_rgb_to_causal_endpoint(monkeypatch):
     second = Image.fromarray(np.ones((8, 8, 3), dtype=np.uint8))
     policy._build_conditions({"image": first})
     conditions = policy._build_conditions({"image": second})
-    assert len(conditions["ikv_rgb_images"]) == 5
-    assert conditions["ikv_rgb_images"][:4] == [first] * 4
-    assert conditions["ikv_rgb_images"][-1] is second
+    assert conditions["first_frame_image"] == [second]
+    assert "ikv_rgb_images" not in conditions
+    assert conditions["ikv_kv_state"] is policy._ikv_kv_state
+
+
+def test_importance_retains_static_history_without_motion_gate():
+    selector = _module("ikv_rgb_static", ROOT / "openwam/model/ikv_rgb.py")
+    frames = [Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8)) for _ in range(9)]
+    keep = selector.select_clean_prefix_patches(
+        frames, clean_latent_frames=3, grid_height=2, grid_width=2,
+        capacity=4, top_k=4, motion_threshold=0.04, device="cpu",
+    )
+    assert keep[-4:].all()
+    motion = selector.select_clean_prefix_patches(
+        frames, clean_latent_frames=3, grid_height=2, grid_width=2,
+        capacity=4, top_k=4, motion_threshold=0.04,
+        motion_only=True, device="cpu",
+    )
+    assert motion[:4].all()
+
+
+def test_dino_class_recency_preserves_unique_older_patch():
+    selector = _module("ikv_rgb_class", ROOT / "openwam/model/ikv_rgb.py")
+    frames = [Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8)) for _ in range(9)]
+    dino = torch.zeros(3, 4, 2)
+    dino[0, 0, 0] = 1
+    dino[0, 1, 1] = 1
+    dino[2, 2, 1] = 1
+    keep = selector.select_clean_prefix_patches(
+        frames, clean_latent_frames=3, grid_height=2, grid_width=2,
+        capacity=2, top_k=2, motion_threshold=0.04, device="cpu",
+        dino_features=dino,
+    ).reshape(3, 4)
+    assert keep[0, 0] and keep[2, 2]
+    assert not keep[0, 1]

@@ -233,6 +233,7 @@ class PI0Pytorch(nn.Module):
                     capacity=self.config.ikv_history_capacity,
                     top_k=self.config.ikv_top_k,
                     threshold=self.config.ikv_motion_threshold,
+                    motion_only=self.config.ikv_motion_only,
                     dino=ikv_dino_features,
                     reference_dino=ikv_reference_dino,
                     current_rgb=ikv_current_rgb,

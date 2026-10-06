@@ -20,12 +20,12 @@ def test_rgb_motion_patch_and_memory_anchors():
     assert scores.shape == (4, 16)
     assert scores[1, 0] > 0
     assert torch.count_nonzero(scores[1, 1:]) == 0
-    selected = select_history_patches(frames, capacity=40, top_k=8, seed=9)
+    selected = select_history_patches(frames, capacity=40, top_k=8, seed=9, motion_only=True)
     assert selected.sum() == 17  # Only dense seed plus changed RGB patch.
     assert selected[0].all()
     assert not selected[-1].any()
     assert selected[1, 0]
-    assert torch.equal(selected, select_history_patches(frames, capacity=40, top_k=8, seed=9))
+    assert torch.equal(selected, select_history_patches(frames, capacity=40, top_k=8, seed=9, motion_only=True))
 
 
 def test_prefix_mask_preserves_feature_scatter_layout():
@@ -33,7 +33,7 @@ def test_prefix_mask_preserves_feature_scatter_layout():
     ids = torch.full((1, 36), 6, dtype=torch.long)
     history = torch.zeros_like(ids, dtype=torch.bool)
     history[:, 2:34] = True
-    masked = mask_history_prefix(ids, history, frames, history_rgb_values=frames, capacity=16)
+    masked = mask_history_prefix(ids, history, frames, history_rgb_values=frames, capacity=16, motion_only=True)
     assert masked.shape == ids.shape
     assert history.sum() == 32  # Vision scatter still consumes all 32 features.
     assert (masked[:, 2:18] == 6).all()
@@ -48,7 +48,7 @@ def test_motion_reads_raw_rgb_not_normalized_vision_pixels():
     history = torch.ones_like(ids, dtype=torch.bool)
     masked = mask_history_prefix(
         ids, history, normalized_pixels, history_rgb_values=raw,
-        capacity=32, motion_threshold=0.04,
+        capacity=32, motion_threshold=0.04, motion_only=True,
     )
     assert masked[0, 16] == 6
     assert (masked[0, 17:] == 7).all()
@@ -61,7 +61,7 @@ def test_last_history_patch_tracks_current_rgb_change():
     scores = history_motion_scores(history, current_rgb=current)
     assert scores[-1, 0] == 1
     assert not scores[-1, 1:].any()
-    selected = select_history_patches(history, current_rgb=current, capacity=32)
+    selected = select_history_patches(history, current_rgb=current, capacity=32, motion_only=True)
     assert selected[0].all() and selected[-1, 0]
     assert selected.sum() == 17
 
@@ -115,3 +115,54 @@ def test_prefix_kv_compaction_uses_same_positions_in_every_layer():
     for layer in cache.layers:
         assert layer.keys.flatten().tolist() == [0, 2, 4]
         assert layer.values.flatten().tolist() == [0, 2, 4]
+
+
+def test_importance_compression_is_independent_of_motion():
+    frames = torch.zeros(3, 3, 32, 32)
+    selected = select_history_patches(frames, capacity=16, top_k=16)
+    assert selected[-1].all()
+    assert selected.sum() == 16
+    motion_only = select_history_patches(frames, capacity=16, top_k=16, motion_only=True)
+    assert motion_only[0].all()
+    assert motion_only.sum() == 16
+
+
+def test_contact_term_can_preserve_older_static_patch():
+    frames = torch.zeros(3, 3, 32, 32)
+    contact = torch.zeros(3, 16)
+    contact[0, 0] = 100
+    selected = select_history_patches(
+        frames, capacity=1, top_k=1, contact_duration=contact
+    )
+    assert selected[0, 0]
+
+
+def test_dino_class_recency_prefers_last_unique_observation():
+    frames = torch.zeros(3, 3, 32, 32)
+    dino = torch.zeros(3, 16, 2)
+    dino[0, 0, 0] = 1  # unique old event: its class has no later observation
+    dino[0, 1, 1] = 1  # old duplicate, superseded in the latest frame
+    dino[2, 2, 1] = 1
+    keep = select_history_patches(frames, capacity=2, top_k=2, dino_features=dino)
+    assert keep[0, 0] and keep[2, 2]
+    assert not keep[0, 1]
+
+
+def test_default_320_budget_preserves_full_20_frame_history():
+    frames = torch.zeros(20, 3, 8, 8)
+    selected = select_history_patches(frames)
+    assert selected.shape == (20, 16)
+    assert selected.all()
+
+    ids = torch.full((1, 320), 6, dtype=torch.long)
+    history = torch.ones_like(ids, dtype=torch.bool)
+    masked = mask_history_prefix(ids, history, frames, history_rgb_values=frames)
+    assert torch.equal(masked, ids)
+
+
+def test_320_budget_ranks_when_history_exceeds_20_frames():
+    frames = torch.zeros(21, 3, 8, 8)
+    selected = select_history_patches(frames)
+    assert selected.sum() == 320
+    assert not selected[0].any()
+    assert selected[1:].all()

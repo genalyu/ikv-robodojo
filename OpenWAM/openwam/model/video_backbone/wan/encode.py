@@ -25,13 +25,14 @@ def encode_text(prompts: list, *, tokenizer, text_encoder, device) -> Tuple[Tens
         padding="max_length",
         truncation=True,
     )
-    ids = ids.to(device)
-    mask = mask.to(device)
+    encoder_device = next(text_encoder.parameters()).device
+    ids = ids.to(encoder_device)
+    mask = mask.to(encoder_device)
     seq_lens = mask.gt(0).sum(dim=1).long()
     context = text_encoder(ids, mask)
     for i, v in enumerate(seq_lens):
         context[i, v:] = 0
-    return context, seq_lens
+    return context.to(device), seq_lens.to(device)
 
 
 def encode_text_for_inference(

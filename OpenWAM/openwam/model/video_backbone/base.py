@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
+import os
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -308,7 +309,18 @@ class VideoBackbone(ABC, nn.Module):
         Must NOT ``.eval()`` — trainable submodules stay in train mode."""
         self._dtype = dtype
         self._device = device
-        self.to(dtype=dtype, device=device)
+        # The released TI2V checkpoint has a 5.7B text encoder. Keep it on
+        # CPU when requested so the remaining model fits a 24 GB RTX 4090.
+        text_encoder = None
+        if os.environ.get("OPENWAM_CPU_TEXT_ENCODER") == "1":
+            text_encoder = self._modules.pop("text_encoder", None)
+        try:
+            self.to(dtype=dtype, device=device)
+        finally:
+            if text_encoder is not None:
+                self._modules["text_encoder"] = text_encoder
+        if text_encoder is not None:
+            text_encoder.to(dtype=dtype, device="cpu")
 
     # ================================================================
     # Optional deploy-asset hook (orchestrated by the architecture)

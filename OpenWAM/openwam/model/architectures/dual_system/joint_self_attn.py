@@ -226,7 +226,7 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
         )
         compiled_loop = getattr(self, "_compiled_mot_run_joint_loop", None)
-        if vstate.extras.get("ikv_video_key_mask") is not None:
+        if vstate.extras.get("ikv_video_key_mask") is not None or vstate.extras.get("ikv_kv_session") is not None:
             compiled_loop = None
         if compiled_loop is not None and not use_gradient_checkpointing and not use_gradient_checkpointing_offload:
             try:

@@ -337,6 +337,18 @@ class JointInferenceEngine(BaseInferenceEngine):
             )
         )
 
+        kv_session = None
+        if conditions.get('ikv_kv_state') is not None:
+            from openwam.model.persistent_kv import OpenWAMKVSession
+            from openwam.model.ikv_dino import encode_dino_grid
+            descriptors = conditions.get('ikv_dino_features')
+            if descriptors is None:
+                path = conditions.get('ikv_dino_model_path')
+                if not path:
+                    raise ValueError('persistent OpenWAM KV requires DINO descriptors or checkpoint')
+                descriptors = encode_dino_grid([conditions['ikv_current_image']],checkpoint=path,grid=(16,16))
+            kv_session = OpenWAMKVSession(conditions['ikv_kv_state'],torch.as_tensor(descriptors),conditions['ikv_current_image'],conditions.get('ikv_motion_only',False),conditions.get('ikv_motion_threshold',.04))
+
         generate_kwargs = self._filter_architecture_generate_kwargs(
             {
                 "schedule": schedule,
@@ -344,9 +356,11 @@ class JointInferenceEngine(BaseInferenceEngine):
                 "vace_video": conditions.get("vace_video", None),
                 "first_frame_image": conditions.get("first_frame_image", None),
                 "ikv_rgb_images": conditions.get("ikv_rgb_images", None),
+                "ikv_kv_session": kv_session,
                 "ikv_patch_capacity": conditions.get("ikv_patch_capacity", None),
                 "ikv_top_k": conditions.get("ikv_top_k", None),
                 "ikv_motion_threshold": conditions.get("ikv_motion_threshold", None),
+                "ikv_motion_only": conditions.get("ikv_motion_only", None),
                 "ikv_dino_features": conditions.get("ikv_dino_features", None),
                 "num_frames": video_num_frames,
                 "action_num_frames": action_num_frames,

@@ -52,81 +52,75 @@ def history_motion_scores(images: torch.Tensor, current_rgb: torch.Tensor | None
 
 @torch.no_grad()
 def select_history_patches(
-    images: torch.Tensor,
-    *,
-    capacity: int = 128,
-    top_k: int = 64,
-    motion_threshold: float = 0.04,
-    time_scale: float = 8.0,
-    seed: int = 0,
-    dino_features: torch.Tensor | None = None,
+    images: torch.Tensor, *, capacity: int = 320, top_k: int = 320,
+    motion_threshold: float = 0.04, motion_only: bool = False,
+    time_scale: float = 8.0, contact_scale: float = 8.0,
+    class_recency_scale: float = 8.0, class_threshold: float = 0.9,
+    seed: int = 0, dino_features: torch.Tensor | None = None,
     reference_dino: torch.Tensor | None = None,
     current_rgb: torch.Tensor | None = None,
-    query_usage: torch.Tensor | None = None,
-    action_repetition: torch.Tensor | None = None,
+    contact_duration: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Pick a bounded RGB history index, retaining motion and MEM anchors.
-
-    The first and latest frames are anchor candidates. The top-k remaining
-    candidates are protected by motion plus recency; other slots are sampled
-    reproducibly, matching N0-TWAM's global top-k/random-remainder policy.
-    """
-    if capacity < 1 or top_k < 0 or time_scale <= 0 or motion_threshold < 0:
-        raise ValueError("invalid RGB IKV retention settings")
-    scores = history_motion_scores(images, current_rgb=current_rgb)
-    frames, patches = scores.shape
-    selected = torch.zeros_like(scores, dtype=torch.bool)
+    """Select history K/V by T + C + DINO class recency; motion is optional."""
+    if (capacity < 1 or top_k < 0 or time_scale <= 0 or contact_scale <= 0
+            or class_recency_scale <= 0 or not 0 <= class_threshold <= 1
+            or motion_threshold < 0):
+        raise ValueError("invalid IKV retention settings")
+    motion = history_motion_scores(images, current_rgb=current_rgb)
+    frames, patches = motion.shape
+    keep = torch.zeros_like(motion, dtype=torch.bool)
     if not frames:
-        return selected
-    total = frames * patches
-    eligible = scores > motion_threshold
-    eligible[0] = True
-    if int(eligible.sum()) <= capacity:
-        return eligible
-    if capacity >= total:
-        return eligible
-    budget = capacity
-    if budget <= 0:
-        return selected
-    age = torch.arange(frames - 1, -1, -1, device=scores.device).float()
-    recency = torch.exp(-(age + (1 if reference_dino is not None else 0)) / time_scale).unsqueeze(1)
-    importance = scores / scores.amax().clamp_min(1e-12) + recency
+        return keep
+    eligible = torch.ones_like(keep)
+    if motion_only:
+        eligible = motion > motion_threshold
+        eligible[0] = True
+    age = torch.arange(frames - 1, -1, -1, device=motion.device).float()
+    importance = torch.exp(-(age[:, None] + (1 if reference_dino is not None else 0)) / time_scale).expand_as(motion).clone()
+    if contact_duration is not None:
+        duration = torch.as_tensor(contact_duration, device=motion.device).float().reshape_as(motion)
+        if not torch.isfinite(duration).all() or (duration < 0).any():
+            raise ValueError("contact duration must be finite and nonnegative")
+        importance += 1 - torch.exp(-duration / contact_scale)
     if dino_features is not None:
-        dino = torch.as_tensor(dino_features, device=scores.device).float()
+        dino = torch.as_tensor(dino_features, device=motion.device).float()
         if dino.ndim != 3 or dino.shape[:2] != (frames, patches):
             raise ValueError("DINO index must be [history_frames,16,feature_dim]")
         if not torch.isfinite(dino).all():
             raise ValueError("DINO index must be finite")
-        present = (dino != 0).any(-1)
-        reference = dino[-1] if reference_dino is None else torch.as_tensor(
-            reference_dino, device=scores.device
-        ).float().reshape(-1, dino.shape[-1])
-        if not torch.isfinite(reference).all():
-            raise ValueError("current DINO reference must be finite")
-        latest = F.normalize(reference, dim=-1)
-        latest = latest[(reference != 0).any(-1)]
-        if len(latest):
-            visual = (F.normalize(dino.flatten(0, 1), dim=-1) @ latest.T).amax(-1)
-            importance += visual.clamp(0, 1).reshape_as(scores) * present
-    for values, sign in ((query_usage, 1), (action_repetition, -1)):
-        if values is not None:
-            value = torch.as_tensor(values, device=scores.device).float().reshape_as(scores)
-            if not torch.isfinite(value).all() or (value < 0).any():
-                raise ValueError("retention statistics must be finite and nonnegative")
-            importance += sign * value / value.amax().clamp_min(1e-12)
-    candidates = eligible
-    candidate_flat = candidates.flatten().nonzero().flatten()
-    if len(candidate_flat):
-        order = torch.argsort(importance.flatten()[candidate_flat], descending=True, stable=True)
-        protected = candidate_flat[order[:min(top_k, budget)]]
-        selected.flatten()[protected] = True
-    budget = capacity - int(selected.sum())
+        flat = F.normalize(dino.flatten(0, 1), dim=-1)
+        times = torch.arange(frames, device=motion.device).repeat_interleave(patches)
+        present = dino.flatten(0, 1).ne(0).any(-1)
+        if reference_dino is not None:
+            reference = torch.as_tensor(reference_dino, device=motion.device).float().reshape(-1, dino.shape[-1])
+            if not torch.isfinite(reference).all():
+                raise ValueError("current DINO reference must be finite")
+            flat = torch.cat((flat, F.normalize(reference, dim=-1)))
+            times = torch.cat((times, times.new_full((len(reference),), frames)))
+            present = torch.cat((present, reference.ne(0).any(-1)))
+        count = frames * patches
+        latest = times[:count].clone()
+        for start in range(0, count, 128):
+            stop = min(start + 128, count)
+            match = flat[start:stop] @ flat.T >= class_threshold
+            match &= present[start:stop, None] & present[None, :]
+            latest[start:stop] = torch.where(match, times[None, :], -1).amax(1).clamp_min(times[start:stop])
+        recency = torch.exp(-(latest - times[:count]).float() / class_recency_scale)
+        importance += (recency * present[:count]).reshape_as(motion)
+    candidates = eligible.flatten().nonzero().flatten()
+    if len(candidates) <= capacity:
+        keep.flatten()[candidates] = True
+        return keep
+    order = torch.argsort(importance.flatten()[candidates], descending=True, stable=True)
+    protected = candidates[order[:min(top_k, capacity)]]
+    keep.flatten()[protected] = True
+    remaining = candidates[order[min(top_k, capacity):]]
+    budget = capacity - len(protected)
     if budget:
-        remaining = (eligible & ~selected).flatten().nonzero().flatten()
         generator = torch.Generator(device="cpu").manual_seed(seed)
         draw = torch.randperm(len(remaining), generator=generator)[:budget].to(remaining.device)
-        selected.flatten()[remaining[draw]] = True
-    return selected
+        keep.flatten()[remaining[draw]] = True
+    return keep
 
 
 @torch.no_grad()
@@ -148,10 +142,14 @@ def mask_history_prefix(
     """
     if history_mask is None or history_pixels is None or not history_mask.any():
         return input_ids
-    if history_rgb_values is None:
-        raise ValueError("RGB IKV needs original history_rgb_values, not normalized vision pixels")
     if input_ids.shape != history_mask.shape or history_mask.dtype != torch.bool:
         raise ValueError("history_mask must be bool and match input_ids")
+    # Every valid patch fits: skip the RGB/DINO index and preserve the full prefix.
+    capacity = retention.get("capacity", 320)
+    if not retention.get("motion_only", False) and bool((history_mask.sum(1) <= capacity).all()):
+        return input_ids
+    if history_rgb_values is None:
+        raise ValueError("RGB IKV needs original history_rgb_values, not normalized vision pixels")
     if (dino_features is None or reference_dino is None) and dino_model_path:
         from opendm.model.dm05.ikv_dino import encode_dino_grid
 

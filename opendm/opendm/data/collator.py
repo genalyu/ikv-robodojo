@@ -131,6 +131,11 @@ class TrainingCollator:
             if current_rgb:
                 batch["current_rgb_values"] = torch.cat(current_rgb, dim=0)
 
+        counts = [inst.get("history_frame_counts") for inst in instances]
+        if any(value is not None for value in counts):
+            if not all(value is not None for value in counts):
+                raise ValueError("mixed online and window history training samples")
+            batch["history_frame_counts"] = torch.cat(counts)
         return batch
 
 

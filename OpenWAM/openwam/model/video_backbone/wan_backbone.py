@@ -447,6 +447,12 @@ class WanBase(VideoBackbone):
             "vace": vace,
             "time_embed": time_embed,  # Wan head time embedding; consumed in finalize()
         }
+        session = kw.get('ikv_kv_session')
+        if session is not None:
+            if int(num_clean_prefix_frames) != 1 or not bool(kw.get('zero_clean_prefix_t_mod',False)):
+                raise ValueError('persistent KV requires exactly one clean frame with zero timestep')
+            session.prepare(grid_height,grid_width,hidden_states.device)
+            extras['ikv_kv_session'] = session
         precomputed_mask = kw.get("ikv_video_key_mask")
         rgb_history = kw.get("ikv_rgb_images")
         if precomputed_mask is not None:
@@ -468,6 +474,7 @@ class WanBase(VideoBackbone):
                 capacity=int(kw.get("ikv_patch_capacity", 512)),
                 top_k=int(kw.get("ikv_top_k", 128)),
                 motion_threshold=float(kw.get("ikv_motion_threshold", 0.04)),
+                motion_only=bool(kw.get("ikv_motion_only", False)),
                 device=hidden_states.device,
                 dino_features=kw.get("ikv_dino_features"),
                 temporal_stride=self._temporal_compression,
@@ -1102,6 +1109,7 @@ class WanBase(VideoBackbone):
                 capacity=int(kw.get("ikv_patch_capacity", 512)),
                 top_k=int(kw.get("ikv_top_k", 128)),
                 motion_threshold=float(kw.get("ikv_motion_threshold", 0.04)),
+                motion_only=bool(kw.get("ikv_motion_only", False)),
                 device=latents.device,
                 dino_features=kw.get("ikv_dino_features"),
                 temporal_stride=self._temporal_compression,

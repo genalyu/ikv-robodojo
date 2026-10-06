@@ -270,8 +270,14 @@ class LoadHistory:
         frame_index = int(meta["frame_index"])
         lines = data["raw_lines"]
         history_images = []
-        for slot in range(self.max_history_images, 0, -1):
-            raw_index = frame_index - int(round(slot / self.uniform_fps * source_fps))
+        if self.max_history_images is None:
+            interval = source_fps / self.uniform_fps
+            last = frame_index - int(round(interval))
+            raw_indices = [int(round(k * interval)) for k in range(max(0, int(last / interval) + 1))] if last >= 0 else []
+        else:
+            raw_indices = [frame_index - int(round(slot / self.uniform_fps * source_fps))
+                           for slot in range(self.max_history_images, 0, -1)]
+        for raw_index in raw_indices:
             if raw_index < 0 or raw_index >= len(lines):
                 continue
             item = orjson.loads(lines[raw_index])[self.image_key]
@@ -700,6 +706,7 @@ class ChatTokenization:
         include_history_rgb: bool = False,
         max_history_images: int = 32,
         enable_logging: bool = False,
+        online_history: bool = False,
     ):
         self.processor = processor
         self.tokenizer = (
@@ -713,6 +720,7 @@ class ChatTokenization:
         self.include_history_rgb = include_history_rgb
         self.max_history_images = max_history_images
         self.enable_logging = enable_logging
+        self.online_history = online_history
         self.history_placeholder_token_id = self.tokenizer.convert_tokens_to_ids(
             "<unused0>"
         )
@@ -759,20 +767,21 @@ class ChatTokenization:
         current_rgb_values = None
         history_mask = None
         if self.is_history:
-            history_images = [
-                image
-                for image in list(data.get("history_images") or [])[
-                    -self.max_history_images :
-                ]
-                if image is not None
-            ]
-            n_valid = len(history_images)
+            candidates = list(data.get("history_images") or [])
+            if not self.online_history:
+                candidates = candidates[-self.max_history_images:]
+            history_images = [image for image in candidates if image is not None]
+            n_valid = min(len(history_images), self.max_history_images)
             user_content[-1]["text"] += "History images: "
-            user_content[-1]["text"] += (
-                "<unused1>"
-                * (HISTORY_TOKENS_PER_IMAGE * (self.max_history_images - n_valid))
-                + (("<unused0>" * HISTORY_TOKENS_PER_IMAGE) + "\n") * n_valid
-            )
+            if self.online_history:
+                # Online inference starts from the same fixed pad layout and packs survivors later.
+                user_content[-1]["text"] += "<unused1>" * (HISTORY_TOKENS_PER_IMAGE * self.max_history_images)
+            else:
+                user_content[-1]["text"] += (
+                    "<unused1>"
+                    * (HISTORY_TOKENS_PER_IMAGE * (self.max_history_images - n_valid))
+                    + (("<unused0>" * HISTORY_TOKENS_PER_IMAGE) + "\n") * n_valid
+                )
             normalized = [image.convert("RGB") for image in history_images]
             if normalized:
                 if self.include_history_rgb:
@@ -878,6 +887,8 @@ class ChatTokenization:
             "history_rgb_values": history_rgb_values,
             "current_rgb_values": current_rgb_values,
             "history_mask": history_mask,
+            "history_frame_counts": (torch.tensor([len(history_images)], dtype=torch.long)
+                                     if self.is_history and self.online_history else None),
         }
 
 

@@ -62,6 +62,13 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            self._single_frame_ikv = bool(getattr(model, "ikv_single_frame", False))
+            self._sample_actions_single_frame_ikv = (nnx_utils.module_jit(model.sample_actions_single_frame_ikv)
+                                                     if self._single_frame_ikv else None)
+            self._ikv_state = None
+            if self._single_frame_ikv:
+                logging.info("PI05 single-frame persistent IKV enabled: visual KV capacity=%d",
+                             int(model.ikv_history_capacity))
             self._rng = rng or jax.random.key(0)
 
     @override
@@ -89,10 +96,14 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
-        outputs = {
-            "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
-        }
+        if not self._is_pytorch_model and self._single_frame_ikv:
+            actions, new_state = self._sample_actions_single_frame_ikv(
+                sample_rng_or_pytorch_device, observation, self._ikv_state, **sample_kwargs)
+            # Publish only after the complete JIT call succeeds.
+            self._ikv_state = jax.tree.map(jax.lax.stop_gradient, new_state)
+        else:
+            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+        outputs = {"state": inputs["state"], "actions": actions}
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
@@ -104,6 +115,9 @@ class Policy(BasePolicy):
             "infer_ms": model_time * 1000,
         }
         return outputs
+
+    def reset_ikv(self):
+        self._ikv_state = None
 
     @property
     def metadata(self) -> dict[str, Any]:

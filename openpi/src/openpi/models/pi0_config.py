@@ -30,9 +30,11 @@ class Pi0Config(_model.BaseModelConfig):
     # - the action expert uses adaRMSNorm to inject the flow matching timestep
     pi05: bool = False
     ikv_rgb_enabled: bool = False
+    ikv_single_frame: bool = False
     ikv_history_capacity: int = 1024
     ikv_top_k: int = 256
     ikv_motion_threshold: float = 0.04
+    ikv_motion_only: bool = False
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 

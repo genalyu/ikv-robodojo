@@ -1437,6 +1437,12 @@ class BaseWAMArchitecture(ABC, nn.Module):
         if cfg_scale_f > 1.0:
             dit_cache = None
 
+        kv_session = extra_pipeline_inputs.get('ikv_kv_session')
+        if kv_session is not None:
+            if cfg_scale_f != 1.0:
+                raise ValueError('persistent KV needs separate conditional/unconditional banks for CFG; use cfg_scale=1')
+            dit_cache = None
+
         action_num_frames = int(action_num_frames if action_num_frames is not None else num_frames)
 
         # CFG knobs ARE forwarded so a CFG-capable backbone (CosmosPredict25)
@@ -1461,7 +1467,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
             cfg_merge=cfg_merge,
             **{
                 key: extra_pipeline_inputs[key]
-                for key in ("ikv_rgb_images", "ikv_patch_capacity", "ikv_top_k", "ikv_motion_threshold", "ikv_dino_features")
+                for key in ("ikv_rgb_images", "ikv_patch_capacity", "ikv_top_k", "ikv_motion_threshold", "ikv_motion_only", "ikv_dino_features")
                 if key in extra_pipeline_inputs
             },
         )
@@ -1480,11 +1486,16 @@ class BaseWAMArchitecture(ABC, nn.Module):
         for key, value in extra_pipeline_inputs.items():
             if (inputs_shared.get("ikv_video_key_mask") is not None and key in
                     {"ikv_rgb_images", "ikv_dino_features", "ikv_patch_capacity",
-                     "ikv_top_k", "ikv_motion_threshold"}):
+                     "ikv_top_k", "ikv_motion_threshold", "ikv_motion_only"}):
                 continue
             if value is not None:
                 inputs_shared[key] = value
         ref_latents = inputs_shared.get("first_frame_latents")
+        if kv_session is not None:
+            if ref_latents is None or ref_latents.shape[2] != 1:
+                raise ValueError('persistent KV requires exactly one observed latent frame')
+            inputs_shared['num_clean_prefix_frames'] = 1
+            inputs_shared['zero_clean_prefix_t_mod'] = True
         if ref_latents is not None:
             latents = inputs_shared["latents"].clone()
             latents[:, :, : ref_latents.shape[2]] = ref_latents
@@ -1609,6 +1620,11 @@ class BaseWAMArchitecture(ABC, nn.Module):
         normalizer = getattr(self, "normalizer", None)
         if normalizer is not None:
             actions = normalizer.unnormalize(actions)
+
+        if kv_session is not None:
+            if not torch.isfinite(action_latents).all():
+                raise RuntimeError('nonfinite OpenWAM actions; persistent KV was not committed')
+            kv_session.commit(vb.num_layers)
 
         return {"video": video_frames, "actions": actions}
 

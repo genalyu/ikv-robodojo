@@ -234,19 +234,23 @@ class DualSystemMoTDriver:
         q_cat = torch.cat([q_v, q_a], dim=1)
         k_cat = torch.cat([k_v, k_a], dim=1)
         v_cat = torch.cat([v_v, v_a], dim=1)
-        k_cat, v_cat, attn_mask = compact_ikv_joint_kv(
-            k_cat, v_cat, attn_mask, vstate
-        )
-        # Contract: `run_joint_loop` pre-builds ``attn_mask`` once per forward and
-        # passes it in for every layer. _step_impl does NOT rebuild the mask
-        # itself; any direct caller must pass the same pre-built mask.
-
-        if self.mot_checkpoint_mixed_attn and ab.training and not suppress_inner_attn_ckpt:
-            mixed = torch.utils.checkpoint.checkpoint(
-                self._mixed_attention, q_cat, k_cat, v_cat, attn_mask, use_reentrant=False
-            )
+        session = vstate.extras.get('ikv_kv_session')
+        if session is not None:
+            mixed = session.attention(self,layer_id,q_cat,k_cat,v_cat,attn_mask)
         else:
-            mixed = self._mixed_attention(q_cat, k_cat, v_cat, attn_mask)
+            k_cat, v_cat, attn_mask = compact_ikv_joint_kv(
+                k_cat, v_cat, attn_mask, vstate
+            )
+            # Contract: `run_joint_loop` pre-builds ``attn_mask`` once per forward and
+            # passes it in for every layer. _step_impl does NOT rebuild the mask
+            # itself; any direct caller must pass the same pre-built mask.
+
+            if self.mot_checkpoint_mixed_attn and ab.training and not suppress_inner_attn_ckpt:
+                mixed = torch.utils.checkpoint.checkpoint(
+                    self._mixed_attention, q_cat, k_cat, v_cat, attn_mask, use_reentrant=False
+                )
+            else:
+                mixed = self._mixed_attention(q_cat, k_cat, v_cat, attn_mask)
 
         attn_v, attn_a = mixed.split([s_video, s_action], dim=1)
         vstate = vb.post_attn_at_layer(layer_id, vstate, attn_v.contiguous(), vpost)
@@ -324,6 +328,10 @@ class DualSystemMoTDriver:
         step-level activation checkpointing — see the class docstring of
         :meth:`step` for memory/compute trade-offs.
         """
+        if vstate.extras.get('ikv_kv_session') is not None:
+            # Session captures current clean KV once outside checkpoint replay.
+            use_gradient_checkpointing = False
+            use_gradient_checkpointing_offload = False
         # Resolve sequence shapes from the backbone-populated f/h/w fields.
         # ``vstate.hidden_states.shape[1]`` is identical to ``f*tokens_per_frame`` for
         # backbones that carry a 3D ``(B, S, D)`` state (Wan), but for

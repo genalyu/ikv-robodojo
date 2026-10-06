@@ -11,7 +11,7 @@ from openpi.models import model as _model
 from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
-from openpi.models.ikv_rgb import compact_jax_prefix_tokens, memory_keys, select_jax
+from openpi.models.ikv_rgb import compact_jax_prefix_tokens, memory_keys, merge_single_frame_jax, select_jax
 from openpi.shared import array_typing as at
 
 logger = logging.getLogger("openpi")
@@ -69,9 +69,11 @@ class Pi0(_model.BaseModel):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
         self.ikv_rgb_enabled = config.ikv_rgb_enabled
+        self.ikv_single_frame = config.ikv_single_frame
         self.ikv_history_capacity = config.ikv_history_capacity
         self.ikv_top_k = config.ikv_top_k
         self.ikv_motion_threshold = config.ikv_motion_threshold
+        self.ikv_motion_only = config.ikv_motion_only
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -128,6 +130,7 @@ class Pi0(_model.BaseModel):
                     capacity=self.ikv_history_capacity,
                     top_k=self.ikv_top_k,
                     threshold=self.ikv_motion_threshold,
+                    motion_only=self.ikv_motion_only,
                     dino=obs.ikv_dino_features,
                     reference_dino=obs.ikv_reference_dino,
                     current_rgb=obs.ikv_current_rgb,
@@ -240,6 +243,89 @@ class Pi0(_model.BaseModel):
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+
+    def sample_actions_single_frame_ikv(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        ikv_state=None,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ):
+        """Recurrently retain exactly one baseline frame worth of visual K/V.
+
+        The current three camera views are prefixed exactly once. Their deep
+        PaliGemma K/V rows compete with the N live rows from the prior call;
+        current text K/V remains ephemeral and is appended after the selected
+        visual memory. State is detached naturally across policy calls.
+        """
+        if not self.ikv_single_frame:
+            raise ValueError("single-frame IKV sampler requires ikv_single_frame=True")
+        observation = _model.preprocess_observation(None, observation, train=False, include_memory=False)
+        batch_size = observation.state.shape[0]
+        if batch_size != 1:
+            raise ValueError("single-frame IKV requires one recurrent stream per policy")
+        if len(observation.images) != len(_model.IMAGE_KEYS):
+            raise ValueError("single-frame IKV expects exactly the baseline camera views")
+        dt = -1.0 / num_steps
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        n = self.ikv_history_capacity
+        if prefix_tokens.shape[1] <= n or n % len(observation.images):
+            raise ValueError("IKV capacity must equal all current visual tokens and leave prompt tokens")
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, current_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        current_k, current_v = current_cache
+        new_k, new_v = current_k[:, :, :n], current_v[:, :, :n]
+        # Frozen SigLIP/Pali projection doubles as the index. Pool 2048 -> 64
+        # deterministically to keep the recurrent selector inexpensive.
+        index = prefix_tokens[:, :n].astype(jnp.float32)
+        index = index.reshape(batch_size, n, 64, index.shape[-1] // 64).mean(-1)
+        index = index / jnp.maximum(jnp.linalg.norm(index, axis=-1, keepdims=True), 1e-6)
+
+        if ikv_state is None:
+            generation = jnp.array(1,dtype=jnp.int32)
+            chosen,selected_index,birth,latest = merge_single_frame_jax(
+                None,index,jnp.array(0,dtype=jnp.int32))
+            selected_k,selected_v = new_k,new_v
+        else:
+            old_k,old_v,old_index,old_birth,old_latest,old_generation=ikv_state
+            chosen,selected_index,birth,latest = merge_single_frame_jax(
+                (old_index,old_birth,old_latest),index,old_generation)
+            generation=old_generation+1
+            candidates_k=jnp.concatenate((old_k,new_k),axis=2)
+            candidates_v=jnp.concatenate((old_v,new_v),axis=2)
+            cache_idx=chosen[None,:,:,None,None]
+            cache_idx=jnp.broadcast_to(cache_idx,(candidates_k.shape[0],batch_size,n,candidates_k.shape[3],candidates_k.shape[4]))
+            selected_k=jnp.take_along_axis(candidates_k,cache_idx,axis=2)
+            selected_v=jnp.take_along_axis(candidates_v,cache_idx,axis=2)
+
+        text_k, text_v = current_k[:, :, n:], current_v[:, :, n:]
+        action_cache = (jnp.concatenate((selected_k,text_k),axis=2),
+                        jnp.concatenate((selected_v,text_v),axis=2))
+        memory_mask = jnp.ones((batch_size,n),dtype=jnp.bool_)
+        action_prefix_mask = jnp.concatenate((memory_mask,prefix_mask[:,n:]),axis=1)
+        prefix_len = action_prefix_mask.shape[1]
+        def step(carry):
+            x_t,time=carry
+            suffix_tokens,suffix_mask,suffix_ar_mask,adarms_cond=self.embed_suffix(
+                observation,x_t,jnp.broadcast_to(time,batch_size))
+            suffix_attn_mask=make_attn_mask(suffix_mask,suffix_ar_mask)
+            memory_attn=einops.repeat(action_prefix_mask,"b p -> b s p",s=suffix_tokens.shape[1])
+            full_attn_mask=jnp.concatenate((memory_attn,suffix_attn_mask),axis=-1)
+            suffix_positions=jnp.sum(action_prefix_mask,axis=-1)[:,None]+jnp.cumsum(suffix_mask,axis=-1)-1
+            (_,suffix_out),_=self.PaliGemma.llm([None,suffix_tokens],mask=full_attn_mask,
+                positions=suffix_positions,kv_cache=action_cache,adarms_cond=[None,adarms_cond])
+            v_t=self.action_out_proj(suffix_out[:,-self.action_horizon:])
+            return x_t+dt*v_t,time+dt
+        def cond(carry): return carry[1]>=-dt/2
+        actions,_=jax.lax.while_loop(cond,step,(noise,1.0))
+        state=(selected_k,selected_v,selected_index,birth,latest,generation)
+        return actions,state
 
     @override
     def sample_actions(
