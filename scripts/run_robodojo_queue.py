@@ -51,32 +51,39 @@ def gpu_free():
     return len(used) == 4 and all(x < 2000 for x in used)
 
 
-def ready():
-    # The official DM05 archive contains 34 tasks; make its omitted dlc task
-    # from the same RoboDojo HDF5 demonstrations before the full-source audit.
-    cache = ROOT / "dm05-official-dataset/robodojo_sim/jsonl/index_cache.json"
-    if not cache.is_file():
-        prepared = subprocess.run(
-            ["python3", str(REPO / "scripts/prepare_dm05_dlc.py")],
-            capture_output=True, text=True, check=False,
-        )
-        (ROOT / "prepare_dm05_dlc.log").write_text(
-            prepared.stdout + prepared.stderr)
-        if prepared.returncode:
-            return False
-    # Run the complete source audit whenever the downloads may have finished.
-    manifest = ROOT / "data_manifest.json"
-    if not manifest.is_file():
-        last = getattr(ready, "_last_audit", 0)
-        if time.monotonic() - last >= 600:
-            ready._last_audit = time.monotonic()
-            audit = subprocess.run(
-                ["python3", str(REPO / "scripts/verify_robodojo_data.py")],
+def ready(run_id):
+    if run_id.startswith("dm05_"):
+        manifest = ROOT / "dm05_manifest.json"
+        if not manifest.is_file():
+            prepared = subprocess.run(
+                ["python3", str(REPO / "scripts/prepare_dm05_dlc.py")],
                 capture_output=True, text=True, check=False,
             )
-            (ROOT / "preflight_data.log").write_text(audit.stdout + audit.stderr)
-    if not manifest.is_file() or json.loads(manifest.read_text()).get("validated") is not True:
-        return False
+            (ROOT / "prepare_dm05_dlc.log").write_text(
+                prepared.stdout + prepared.stderr)
+            if prepared.returncode:
+                return False
+            audit = subprocess.run(
+                ["python3", str(REPO / "scripts/verify_dm05_data.py")],
+                capture_output=True, text=True, check=False,
+            )
+            (ROOT / "preflight_dm05.log").write_text(audit.stdout + audit.stderr)
+        if not manifest.is_file() or json.loads(manifest.read_text()).get("validated") is not True:
+            return False
+    else:
+        # The HDF5 and LeRobot sources are needed for OpenWAM and PI05.
+        manifest = ROOT / "data_manifest.json"
+        if not manifest.is_file():
+            last = getattr(ready, "_last_audit", 0)
+            if time.monotonic() - last >= 600:
+                ready._last_audit = time.monotonic()
+                audit = subprocess.run(
+                    ["python3", str(REPO / "scripts/verify_robodojo_data.py")],
+                    capture_output=True, text=True, check=False,
+                )
+                (ROOT / "preflight_data.log").write_text(audit.stdout + audit.stderr)
+        if not manifest.is_file() or json.loads(manifest.read_text()).get("validated") is not True:
+            return False
     if subprocess.check_output(["git", "-C", str(REPO), "branch", "--show-current"], text=True).strip() != "main":
         return False
     if subprocess.check_output(["git", "-C", str(REPO), "status", "--porcelain"], text=True).strip():
@@ -97,12 +104,11 @@ def ready():
         return False
     if not list((ROOT / "models/openwam-alpha-foundation").rglob("*.safetensors")):
         return False
-    for launcher in {item[1] for item in ORDER}:
-        script = REPO / "scripts" / launcher
-        if not script.is_file() or not os.access(script, os.X_OK):
-            return False
-        if "training is not validated; refusing to run" in script.read_text():
-            return False
+    launcher = REPO / "scripts" / next(item[1] for item in ORDER if item[0] == run_id)
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        return False
+    if "training is not validated; refusing to run" in launcher.read_text():
+        return False
     return True
 
 
@@ -110,16 +116,14 @@ def main():
     ROOT.mkdir(parents=True, exist_ok=True)
     with (ROOT / "queue.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        while not (NEOSIM_DONE.is_file() and not live_neosim() and gpu_free() and ready()):
-            if not NEOSIM_DONE.is_file() or live_neosim():
-                state = "waiting_for_neosim_ikv"
-            elif not ready():
-                state = "waiting_for_preflight"
-            else:
-                state = "waiting_for_gpus"
+        while not (NEOSIM_DONE.is_file() and not live_neosim() and gpu_free()):
+            state = "waiting_for_neosim_ikv" if not NEOSIM_DONE.is_file() or live_neosim() else "waiting_for_gpus"
             write_status(state=state, order=[x[0] for x in ORDER])
             time.sleep(60)
         for run_id, launcher, mode in ORDER:
+            while not ready(run_id) or not gpu_free():
+                write_status(state="waiting_for_preflight", current=run_id)
+                time.sleep(60)
             result_path = ROOT / "runs" / run_id / "run_complete.json"
             if result_path.is_file():
                 result = json.loads(result_path.read_text())
