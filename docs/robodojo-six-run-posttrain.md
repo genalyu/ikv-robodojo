@@ -29,4 +29,3 @@ The fixed queue order is DM05 baseline, DM05 IKV, OpenWAM baseline, OpenWAM IKV,
 2. Wire ordered episode sampling and detached per-episode K/V state into the official four-GPU trainers. Reset the bank at episode boundaries and after optimizer updates; no future frame may be used in a current prediction. PI05 must train through the same bounded 768-token K/V path used at inference, not merely set an inference flag. Ensure no motion gating is enabled.
 3. Verify shared normalization per baseline/IKV pair. Run CPU unit tests and one real four-GPU smoke per method after neosim releases the GPUs. Confirm at least one optimizer update, finite loss, resume behavior, and checkpoint format.
 4. Commit and publish the A100 server working tree to `genalyu/ikv-robodojo`; then write `preflight_ready.json` containing the exact committed HEAD and `all_six_runs_validated=true` so the queue may start.
-EOF'

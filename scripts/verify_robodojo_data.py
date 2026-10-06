@@ -42,4 +42,3 @@ tmp = target.with_suffix('.tmp')
 tmp.write_text(json.dumps(manifest, indent=2))
 tmp.replace(target)
 print(f'validated {len(expected)} tasks, {sum(raw.values())} HDF5 episodes, {sum(dm.values())} DM05 episodes, {pi_total} LeRobot episodes')
-EOF'
