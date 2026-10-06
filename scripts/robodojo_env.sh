@@ -3,6 +3,7 @@ set -euo pipefail
 export ROBODOJO_ROOT=/mnt/cfs/9wt59p/genalyu/robodojo-posttrain
 export ROBODOJO_REPO=/mnt/cfs/9wt59p/genalyu/ikv-robodojo
 export CUDA_VISIBLE_DEVICES=0,1,2,3
+export PYTHONPATH="$ROBODOJO_REPO${PYTHONPATH:+:$PYTHONPATH}"
 export HF_HOME="$ROBODOJO_ROOT/hf-cache"
 export HF_DATASETS_CACHE="$ROBODOJO_ROOT/hf-cache/datasets"
 export OPENPI_DATA_HOME="$ROBODOJO_ROOT/openpi-cache"

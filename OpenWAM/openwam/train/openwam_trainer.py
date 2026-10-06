@@ -265,6 +265,7 @@ class OpenWAMTrainer:
         import time as _time
 
         opt_step = 0
+        self._ikv_optimizer_step = 0
         global_step = 0
         start_epoch = 0
         skip_first = 0
@@ -333,6 +334,7 @@ class OpenWAMTrainer:
                             scheduler.step()
                         optimizer.zero_grad()
                         opt_step += 1
+                        self._ikv_optimizer_step = opt_step
 
                 global_step += 1
 
@@ -411,6 +413,14 @@ class OpenWAMTrainer:
             collate_fn=list,
             pin_memory=True,
         )
+        if bool(t.get("persistent_ikv_training", False)):
+            from robodojo_training.ordered import InterleavedChunkSampler
+            if batch_size != 1 or isinstance(self.dataset, MixtureDataset):
+                raise ValueError("persistent IKV requires batch size one and an ordered RoboDojo dataset")
+            kwargs["shuffle"] = False
+            kwargs["sampler"] = InterleavedChunkSampler(
+                self.dataset, int(t.gradient_accumulation_steps),
+                self.accelerator.num_processes, self._run_seed or 0)
         if not shuffle:
             logger.info(
                 "DataLoader shuffle disabled for MixtureDataset; its shuffled index map "
@@ -561,12 +571,39 @@ class OpenWAMTrainer:
         if self.lambda_action > 0 and inputs.get("actions") is None:
             raise ValueError("lambda_action > 0 but no action in data.")
 
+        session = None
+        if bool(self.cfg.training.get("persistent_ikv_training", False)):
+            from openwam.model.ikv_dino import encode_dino_grid
+            from openwam.model.persistent_kv import OpenWAMKVSession
+            if len(batch) != 1:
+                raise ValueError("persistent IKV requires exactly one current observation")
+            sample = batch[0]
+            frame = int(sample["start_frame"])
+            identity = (self._ikv_optimizer_step, str(sample["episode_path"]))
+            if identity != getattr(self, "_ikv_identity", None) or frame <= getattr(self, "_ikv_frame", -1):
+                self._ikv_state = {}
+            self._ikv_identity, self._ikv_frame = identity, frame
+            ref = inputs.get("first_frame_latents")
+            if ref is None or ref.shape[2] != 1:
+                raise ValueError("IKV requires one actual clean observed frame")
+            image = sample["first_frame_image"][0]
+            descriptors = encode_dino_grid(
+                [image], checkpoint=str(self.cfg.training.ikv_dino_model_path),
+                grid=(16,16), device=ref.device)
+            session = OpenWAMKVSession(self._ikv_state, descriptors, image, motion_only=False)
+            inputs.update(ikv_kv_session=session, num_clean_prefix_frames=1, zero_clean_prefix_t_mod=True)
+
         result = self.architecture.compute_loss(
             **inputs,
             lambda_video=self.lambda_video,
             lambda_action=self.lambda_action,
         )
 
+        if session is not None:
+            if not torch.isfinite(result["loss"]):
+                raise RuntimeError("nonfinite IKV training loss")
+            architecture = self.accelerator.unwrap_model(self.architecture)
+            session.commit(architecture.video_backbone.num_layers)
         return {
             "total": result["loss"],
             "video": result.get("loss_video", torch.tensor(0.0)),

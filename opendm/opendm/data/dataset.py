@@ -54,6 +54,7 @@ class JsonlDataset(Dataset):
         result["meta_data"] = {
             **(self.dataset_meta or {}),
             "frame_index": frame_index,
+            "episode_id": file_index,
         }
         if self.transforms is not None:
             result = self.transforms(result)

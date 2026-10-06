@@ -270,6 +270,7 @@ class LoadHistory:
         frame_index = int(meta["frame_index"])
         lines = data["raw_lines"]
         history_images = []
+        history_frame_indices = []
         if self.max_history_images is None:
             interval = source_fps / self.uniform_fps
             last = frame_index - int(round(interval))
@@ -280,6 +281,7 @@ class LoadHistory:
         for raw_index in raw_indices:
             if raw_index < 0 or raw_index >= len(lines):
                 continue
+            history_frame_indices.append(raw_index)
             item = orjson.loads(lines[raw_index])[self.image_key]
             image_url = os.path.join(self.image_dir, item["url"].lstrip("./"))
             if item["type"] == "image":
@@ -289,6 +291,7 @@ class LoadHistory:
             else:
                 raise ValueError(f"Invalid history image type: {item['type']}")
         data["history_images"] = history_images
+        data["history_frame_indices"] = history_frame_indices
         return data
 
 
@@ -889,6 +892,14 @@ class ChatTokenization:
             "history_mask": history_mask,
             "history_frame_counts": (torch.tensor([len(history_images)], dtype=torch.long)
                                      if self.is_history and self.online_history else None),
+            "stream_episode_id": (torch.tensor([data["meta_data"]["episode_id"]])
+                                  if self.online_history and "episode_id" in data["meta_data"] else None),
+            "stream_frame_idx": (torch.tensor([data["meta_data"]["frame_index"]])
+                                 if self.online_history else None),
+            "history_patch_ids": (torch.tensor(data.get("history_frame_indices", []), dtype=torch.long)[:, None]
+                                  * 16 + torch.arange(16)[None, :]).flatten() if self.online_history else None,
+            "history_times": (torch.tensor(data.get("history_frame_indices", []), dtype=torch.float32)
+                              / float(data["meta_data"]["fps"])).repeat_interleave(16) if self.online_history else None,
         }
 
 

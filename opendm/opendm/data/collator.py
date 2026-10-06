@@ -136,6 +136,12 @@ class TrainingCollator:
             if not all(value is not None for value in counts):
                 raise ValueError("mixed online and window history training samples")
             batch["history_frame_counts"] = torch.cat(counts)
+        if instances[0].get("stream_episode_id") is not None:
+            for key in ("stream_episode_id", "stream_frame_idx", "history_patch_ids", "history_times"):
+                if len(instances) == 1:
+                    batch[key] = instances[0][key]
+                elif key.startswith("stream_"):
+                    batch[key] = torch.cat([inst[key] for inst in instances])
         return batch
 
 

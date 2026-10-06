@@ -222,7 +222,35 @@ class DMTrainer(Trainer):
         training_args = TrainingArguments(**linked_args)
         return training_args
 
+    def _get_train_sampler(self, train_dataset=None):
+        if not self.exp_config.trainer_config.persistent_ikv_training:
+            return super()._get_train_sampler(train_dataset)
+        from robodojo_training.ordered import InterleavedChunkSampler
+        if self.args.per_device_train_batch_size != 1:
+            raise ValueError("persistent IKV requires one recurrent stream per GPU")
+        return InterleavedChunkSampler(
+            train_dataset if train_dataset is not None else self.train_dataset,
+            self.args.gradient_accumulation_steps, self.args.world_size, self.exp_config.trainer_config.seed)
+
+    def _prepare_persistent_ikv(self, inputs):
+        from opendm.model.dm05.dm05_lora import unwrap_dm05_model
+        from opendm.model.dm05.persistent_kv import PersistentKVBank
+        from opendm.model.dm05.streaming_training import prepare_stream_step
+        inputs = dict(inputs)
+        episode = int(inputs.pop("stream_episode_id").item())
+        frame = int(inputs.pop("stream_frame_idx").item())
+        step = int(self.state.global_step)
+        identity = (step, episode)
+        if (getattr(self, "_ikv_identity", None) != identity
+                or frame <= getattr(self, "_ikv_last_frame", -1)):
+            self._ikv_bank = PersistentKVBank(self.exp_config.model_config.ikv_history_capacity)
+        self._ikv_identity = identity
+        self._ikv_last_frame = frame
+        return prepare_stream_step(unwrap_dm05_model(self.model), inputs, self._ikv_bank)
+
     def compute_loss(self, model, inputs, return_outputs=False, *args, **kwargs):
+        if self.exp_config.trainer_config.persistent_ikv_training:
+            inputs = self._prepare_persistent_ikv(inputs)
         loss, outputs = super().compute_loss(model, inputs, return_outputs=True)
         loss_keys = [_ for _ in outputs if _.endswith("_loss")]
 

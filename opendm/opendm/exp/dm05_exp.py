@@ -261,6 +261,7 @@ class DM05OptimizerConfig(Config):
 
 @dataclass
 class DM05TrainerConfig(Config):
+    persistent_ikv_training: bool = field(default=False)
     fsdp1: bool | None = field(default=True)
     output_dir: str = field(
         default=f"user_checkpoints/{os.path.basename(__file__)[:-3]}"

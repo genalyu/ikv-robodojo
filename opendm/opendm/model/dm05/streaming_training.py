@@ -25,7 +25,7 @@ def prepare_stream_step(model, step, bank):
     if len(ids)>bank.capacity or len(ids)%16:
         raise ValueError('stream step must contain <=20 complete history frames')
     if features is None:
-        features = encode_policy_history(model,pixels).flatten(0,1) if len(ids) else next(model.parameters()).new_empty((0,model.model.language_model.config.hidden_size))
+        features = encode_policy_history(model,pixels).flatten(0,1) if len(ids) else next(model.parameters()).new_empty((0,model.model.vlm.model.language_model.config.hidden_size))
     if descriptors is None:
         if len(ids):
             descriptors = encode_dino_grid(rgb,checkpoint=model.config.ikv_dino_model_path,grid=(4,4),device=features.device).reshape(len(ids),-1)

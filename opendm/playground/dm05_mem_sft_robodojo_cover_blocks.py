@@ -101,7 +101,7 @@ class DM05DataConfig(_DM05DataConfig):
                 LoadHistory(
                     image_key=image_keys[0],
                     image_dir=dataset_info["image_dir"],
-                    max_history_images=None if include_history_rgb else HISTORY_SLOTS,
+                    max_history_images=HISTORY_SLOTS,
                 ),
                 PixelTransform(
                     transform_pipeline=TrainingTransformPipeline(p=0.5),
