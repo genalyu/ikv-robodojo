@@ -2,7 +2,7 @@
 
 Server workspace: `/mnt/cfs/9wt59p/genalyu/ikv-robodojo`.
 Shared data/weights/runs: `/mnt/cfs/9wt59p/genalyu/robodojo-posttrain`.
-Queue: `scripts/run_robodojo_queue.py`, currently deliberately gated by `preflight_ready.json`.
+Queue: `scripts/run_robodojo_queue.py`, waiting for neosim completion, full data audit, final weights, and four idle GPUs.
 Four A100 80 GB GPUs, `CUDA_VISIBLE_DEVICES=0,1,2,3`. Do not disturb the current neosim pure IKV run.
 
 ## Scope and provenance
@@ -26,9 +26,9 @@ The queue now runs the full-source data audit itself after neosim finishes. It r
 ## Remaining checks before readiness
 
 1. Complete and verify all downloads and isolated environments. Confirm the complete 35-task HDF5 and DM05 JSONL/video coverage, full LeRobot v3 metadata, and model checkpoint integrity. Build `data_manifest.json` only after this audit.
-2. Wire ordered episode sampling and detached per-episode K/V state into the official four-GPU trainers. Reset the bank at episode boundaries and after optimizer updates; no future frame may be used in a current prediction. PI05 must train through the same bounded 768-token K/V path used at inference, not merely set an inference flag. Ensure no motion gating is enabled.
+2. Validate the integrated ordered episode sampling and detached per-episode K/V state in the official four-GPU trainers. The recurrent code resets memory at episode boundaries and after optimizer updates and uses the bounded 768-token PI05 inference path. Ensure no motion gating is enabled.
 3. Verify shared normalization per baseline/IKV pair. Run CPU unit tests and one real four-GPU smoke per method after neosim releases the GPUs. Confirm at least one optimizer update, finite loss, resume behavior, and checkpoint format.
-4. Commit and publish the A100 server working tree to `genalyu/ikv-robodojo`; then write `preflight_ready.json` containing the exact committed HEAD and `all_six_runs_validated=true` so the queue may start.
+4. Publish the A100 server working tree directly to `genalyu/ikv-robodojo` main. The queue checks clean main and reruns the data audit automatically.
 
 ## GitHub push route
 
@@ -51,3 +51,7 @@ A server-side v3 fixture using episode 0 confirmed the reader returns three 480x
 The PI05 normalization asset is the released RoboDojo PI05 checkpoint's `assets/arx_x5_sim/norm_stats.json`, exactly as referenced by the official RoboDojo OpenPI config. It was streamed from the 2K server into `/mnt/cfs/9wt59p/genalyu/robodojo-posttrain/norm/pi05/official-release/arx_x5_sim/norm_stats.json`; SHA-256 is `ad7dea3e3d2bcdb348945fe03422ab1adccd03baf67318b1a1d153dfe8694db5`. The launcher copies the same bytes into baseline and IKV asset directories.
 
 DM05's official RGB vision config requests FlashAttention 2, but the deployed torch 2.11+cu128 environment has no official prebuilt `flash_attn` wheel. Both baseline and IKV launchers therefore select the model's supported SDPA vision attention backend. This changes the attention implementation for both runs together; model weights, attention visibility, source data, optimizer, and 30,000-update schedule remain identical. Revisit performance only after the official wheel becomes available or a verified build succeeds.
+
+## DM05 release gap and conversion
+
+The Dexmal RoboDojo simulation archive contains only 34 task directories (3,400 episodes) and omits `dlc`. The 35-task RoboDojo source and PI05 LeRobot v3 metadata both include it. To keep all three methods on the selected 35-task scope, `scripts/convert_robodojo_dm05.py` derives `dlc` JSONL and H.264 video from the original RoboDojo HDF5 episodes. Its state/action joint order, prompt, camera references, and terminal extra frame were checked against a released `arrange_largest_number` episode: all 579 JSONL records matched exactly, and the generated videos decoded as 579 frames at 25 FPS. The encoding differs from the prebuilt archive; inputs are the same source frames. `scripts/prepare_dm05_dlc.py` waits for 100 `dlc` HDF5 episodes, converts them, then builds OpenDM's 3,500-episode index cache. The queue calls it before the complete data audit. The audit now checks every DM05 video's existence and nonempty size as well as episode counts.

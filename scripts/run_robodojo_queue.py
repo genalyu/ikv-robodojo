@@ -52,6 +52,18 @@ def gpu_free():
 
 
 def ready():
+    # The official DM05 archive contains 34 tasks; make its omitted dlc task
+    # from the same RoboDojo HDF5 demonstrations before the full-source audit.
+    cache = ROOT / "dm05-official-dataset/robodojo_sim/jsonl/index_cache.json"
+    if not cache.is_file():
+        prepared = subprocess.run(
+            ["python3", str(REPO / "scripts/prepare_dm05_dlc.py")],
+            capture_output=True, text=True, check=False,
+        )
+        (ROOT / "prepare_dm05_dlc.log").write_text(
+            prepared.stdout + prepared.stderr)
+        if prepared.returncode:
+            return False
     # Run the complete source audit whenever the downloads may have finished.
     manifest = ROOT / "data_manifest.json"
     if not manifest.is_file():

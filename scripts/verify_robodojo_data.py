@@ -34,6 +34,15 @@ for task in expected:
         errors.append(f'HDF5 {task}: {raw[task]}/100 episodes')
     if dm[task] != 100:
         errors.append(f'DM05 JSONL {task}: {dm[task]}/100 episodes')
+dm_missing_video = []
+for task in expected:
+    for episode in (dm_root / 'jsonl' / task).glob('episode_*.jsonl'):
+        for cam in ('cam_head', 'cam_left_wrist', 'cam_right_wrist'):
+            video = dm_root / 'video' / task / episode.stem / f'{cam}.mp4'
+            if not video.is_file() or video.stat().st_size == 0:
+                dm_missing_video.append(str(video))
+if dm_missing_video:
+    errors.append(f'DM05 missing/empty videos: {len(dm_missing_video)}; first: {dm_missing_video[:5]}')
 if raw_extra or dm_extra:
     errors.append(f'unexpected task directories: HDF5={raw_extra} DM05={dm_extra}')
 if pi_total != 3500 or pi_episodes.num_rows != 3500:
