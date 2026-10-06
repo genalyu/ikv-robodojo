@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 import logging
 import multiprocessing
 import os
@@ -7,7 +8,7 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+import lerobot.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
 
@@ -146,7 +147,10 @@ def create_torch_dataset(
     )
 
     if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+        tasks = dataset_meta.tasks
+        if hasattr(tasks, "iterrows"):
+            tasks = {int(row["task_index"]): str(prompt) for prompt, row in tasks.iterrows()}
+        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(tasks)])
 
     return dataset
 
@@ -301,6 +305,13 @@ def create_torch_data_loader(
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+    if getattr(model_config, "ikv_single_frame", False):
+        from openpi.training.robodojo_sequences import EpisodeSequenceDataset
+        metadata = (Path(os.environ["HF_LEROBOT_HOME"]) / data_config.repo_id /
+                    "meta/episodes/chunk-000/file-000.parquet")
+        if not metadata.is_file():
+            raise FileNotFoundError(f"RoboDojo episode metadata missing: {metadata}")
+        dataset = EpisodeSequenceDataset(dataset, metadata, length=4)
 
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size

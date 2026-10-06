@@ -230,7 +230,8 @@ class DMTrainer(Trainer):
             raise ValueError("persistent IKV requires one recurrent stream per GPU")
         return InterleavedChunkSampler(
             train_dataset if train_dataset is not None else self.train_dataset,
-            self.args.gradient_accumulation_steps, self.args.world_size, self.exp_config.trainer_config.seed)
+            self.args.gradient_accumulation_steps, self.args.world_size,
+            getattr(self.exp_config.trainer_config, "seed", 42))
 
     def _prepare_persistent_ikv(self, inputs):
         from opendm.model.dm05.dm05_lora import unwrap_dm05_model

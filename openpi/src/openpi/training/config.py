@@ -630,7 +630,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True),
         data=LeRobotAlohaDataConfig(
             repo_id="RoboDojo_sim_arx-x5_v30",
-            assets=AssetsConfig(asset_id="RoboDojo_sim_arx-x5_v30"),
+            assets=AssetsConfig(asset_id="arx_x5_sim"),
             repack_transforms=_transforms.Group(
                 inputs=[_transforms.RepackTransform({
                     "images": {
@@ -651,6 +651,35 @@ _CONFIGS = [
         assets_base_dir=os.environ.get("ROBODOJO_PI05_ASSETS_BASE_DIR", "./assets"),
         seed=0,
         batch_size=256,
+        fsdp_devices=2,
+        num_train_steps=60000,
+    ),
+    TrainConfig(
+        name="pi05_robodojo_all_ikv",
+        model=pi0_config.Pi0Config(pi05=True, ikv_rgb_enabled=True, ikv_single_frame=True, ikv_history_capacity=768, ikv_top_k=768),
+        data=LeRobotAlohaDataConfig(
+            repo_id="RoboDojo_sim_arx-x5_v30",
+            assets=AssetsConfig(asset_id="arx_x5_sim"),
+            repack_transforms=_transforms.Group(
+                inputs=[_transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            os.environ.get("ROBODOJO_PI05_BASE_PARAMS", "gs://openpi-assets/checkpoints/pi05_base/params")
+        ),
+        assets_base_dir=os.environ.get("ROBODOJO_PI05_ASSETS_BASE_DIR", "./assets"),
+        seed=0,
+        batch_size=64,
         fsdp_devices=2,
         num_train_steps=60000,
     ),

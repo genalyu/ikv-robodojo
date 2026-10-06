@@ -98,6 +98,7 @@ class Observation(Generic[ArrayT]):
     ikv_reference_dino: at.Float[ArrayT, "*b p d"] | None = None
     # Unaugmented current head RGB for the t-1 -> t motion index.
     ikv_current_rgb: at.Float[ArrayT, "*b h w c"] | None = None
+    ikv_valid: at.Bool[ArrayT, "*b"] | None = None
 
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
@@ -130,6 +131,7 @@ class Observation(Generic[ArrayT]):
             ikv_dino_features=data.get("ikv_dino_features"),
             ikv_reference_dino=data.get("ikv_reference_dino"),
             ikv_current_rgb=data.get("ikv_current_rgb"),
+            ikv_valid=data.get("ikv_valid"),
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
@@ -221,6 +223,7 @@ def preprocess_observation(
         ikv_dino_features=observation.ikv_dino_features,
         ikv_reference_dino=observation.ikv_reference_dino,
         ikv_current_rgb=ikv_current_rgb,
+        ikv_valid=observation.ikv_valid,
         tokenized_prompt=observation.tokenized_prompt,
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,

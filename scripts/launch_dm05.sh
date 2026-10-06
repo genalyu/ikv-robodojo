@@ -28,6 +28,7 @@ bash script/dm05_launcher.sh \
   --data-config.dataset-name robodojo_sim_all \
   --data-config.norm-stats-root "$ROBODOJO_ROOT/norm/dm05" \
   --model-config.model-name-or-path "$ROBODOJO_ROOT/models/dm05-mem-base" \
+  --model-config.vision-attn-implementation sdpa \
   --trainer-config.output-dir "$run_dir" \
   --trainer-config.num-train-steps 30000 \
   --trainer-config.per-device-train-batch-size "$batch" \

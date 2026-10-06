@@ -147,6 +147,22 @@ def train_step(
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
+        if config.name == "pi05_robodojo_all_ikv":
+            if observation.ikv_valid is None or actions.shape[1] != 4:
+                raise ValueError("PI05 IKV needs four episode-ordered steps")
+            state = None
+            total = jnp.array(0.0, dtype=jnp.float32)
+            count = jnp.array(0.0, dtype=jnp.float32)
+            for step in range(4):
+                obs_step = jax.tree.map(lambda x: x[:, step], observation)
+                actions_step = actions[:, step]
+                step_rng = jax.random.fold_in(rng, step)
+                step_loss, state = model.compute_loss_single_frame_ikv(
+                    step_rng, obs_step, actions_step, state)
+                valid = obs_step.ikv_valid.astype(step_loss.dtype)
+                total = total + jnp.sum(step_loss * valid[:, None])
+                count = count + jnp.sum(valid) * step_loss.shape[1]
+            return total / jnp.maximum(count, 1)
         chunked_loss = model.compute_loss(rng, observation, actions, train=True)
         return jnp.mean(chunked_loss)
 

@@ -244,34 +244,9 @@ class Pi0(_model.BaseModel):
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
-    def sample_actions_single_frame_ikv(
-        self,
-        rng: at.KeyArrayLike,
-        observation: _model.Observation,
-        ikv_state=None,
-        *,
-        num_steps: int | at.Int[at.Array, ""] = 10,
-        noise: at.Float[at.Array, "b ah ad"] | None = None,
-    ):
-        """Recurrently retain exactly one baseline frame worth of visual K/V.
-
-        The current three camera views are prefixed exactly once. Their deep
-        PaliGemma K/V rows compete with the N live rows from the prior call;
-        current text K/V remains ephemeral and is appended after the selected
-        visual memory. State is detached naturally across policy calls.
-        """
-        if not self.ikv_single_frame:
-            raise ValueError("single-frame IKV sampler requires ikv_single_frame=True")
-        observation = _model.preprocess_observation(None, observation, train=False, include_memory=False)
+    def _ikv_prefill(self, observation, ikv_state):
+        """Share the exact recurrent RGB K/V selector in inference and training."""
         batch_size = observation.state.shape[0]
-        if batch_size != 1:
-            raise ValueError("single-frame IKV requires one recurrent stream per policy")
-        if len(observation.images) != len(_model.IMAGE_KEYS):
-            raise ValueError("single-frame IKV expects exactly the baseline camera views")
-        dt = -1.0 / num_steps
-        if noise is None:
-            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
-
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         n = self.ikv_history_capacity
         if prefix_tokens.shape[1] <= n or n % len(observation.images):
@@ -309,6 +284,65 @@ class Pi0(_model.BaseModel):
                         jnp.concatenate((selected_v,text_v),axis=2))
         memory_mask = jnp.ones((batch_size,n),dtype=jnp.bool_)
         action_prefix_mask = jnp.concatenate((memory_mask,prefix_mask[:,n:]),axis=1)
+        state=(selected_k,selected_v,selected_index,birth,latest,generation)
+        return action_cache, action_prefix_mask, state
+
+    def compute_loss_single_frame_ikv(self, rng, observation, actions, ikv_state=None):
+        """Native flow matching loss with the inference selector and detached prior state."""
+        if not self.ikv_single_frame:
+            raise ValueError("single-frame IKV loss requires ikv_single_frame=True")
+        preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
+        observation = _model.preprocess_observation(
+            preprocess_rng, observation, train=True, include_memory=False)
+        batch_shape = actions.shape[:-2]
+        noise = jax.random.normal(noise_rng, actions.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
+        x_t = time[..., None, None] * noise + (1 - time[..., None, None]) * actions
+        u_t = noise - actions
+        action_cache, action_prefix_mask, new_state = self._ikv_prefill(observation, ikv_state)
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        memory_attn = einops.repeat(action_prefix_mask,"b p -> b s p",s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate((memory_attn,suffix_attn_mask),axis=-1)
+        suffix_positions = (jnp.sum(action_prefix_mask,axis=-1)[:,None]
+                            + jnp.cumsum(suffix_mask,axis=-1)-1)
+        (_,suffix_out),_ = self.PaliGemma.llm(
+            [None,suffix_tokens], mask=full_attn_mask, positions=suffix_positions,
+            kv_cache=action_cache, adarms_cond=[None,adarms_cond])
+        v_t = self.action_out_proj(suffix_out[:,-self.action_horizon:])
+        loss = jnp.mean(jnp.square(v_t-u_t),axis=-1)
+        detached = jax.tree.map(jax.lax.stop_gradient,new_state)
+        return loss, detached
+
+    def sample_actions_single_frame_ikv(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        ikv_state=None,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ):
+        """Recurrently retain exactly one baseline frame worth of visual K/V.
+
+        The current three camera views are prefixed exactly once. Their deep
+        PaliGemma K/V rows compete with the N live rows from the prior call;
+        current text K/V remains ephemeral and is appended after the selected
+        visual memory. State is detached naturally across policy calls.
+        """
+        if not self.ikv_single_frame:
+            raise ValueError("single-frame IKV sampler requires ikv_single_frame=True")
+        observation = _model.preprocess_observation(None, observation, train=False, include_memory=False)
+        batch_size = observation.state.shape[0]
+        if batch_size != 1:
+            raise ValueError("single-frame IKV requires one recurrent stream per policy")
+        if len(observation.images) != len(_model.IMAGE_KEYS):
+            raise ValueError("single-frame IKV expects exactly the baseline camera views")
+        dt = -1.0 / num_steps
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        action_cache, action_prefix_mask, state = self._ikv_prefill(observation, ikv_state)
         prefix_len = action_prefix_mask.shape[1]
         def step(carry):
             x_t,time=carry
@@ -324,7 +358,6 @@ class Pi0(_model.BaseModel):
             return x_t+dt*v_t,time+dt
         def cond(carry): return carry[1]>=-dt/2
         actions,_=jax.lax.while_loop(cond,step,(noise,1.0))
-        state=(selected_k,selected_v,selected_index,birth,latest,generation)
         return actions,state
 
     @override

@@ -61,7 +61,17 @@ def start(method):
         commands = [common + ['--index', TORCH_MIRROR+'cu126', '-r', str(requirements),
                              'torch==2.7.1+cu126', 'torchvision==0.22.1+cu126'],
                     ['uv','pip','install','--python',python,'--no-deps','-e',str(REPO/'openpi'),
-                     '-e',str(REPO/'openpi/packages/openpi-client')]]
+                     '-e',str(REPO/'openpi/packages/openpi-client')],
+                    ['uv','pip','install','--python',python,'--default-index','https://mirrors.aliyun.com/pypi/simple',
+                     'accelerate==1.14.0'],
+                    ['uv','pip','install','--python',python,'--no-deps','--default-index','https://mirrors.aliyun.com/pypi/simple',
+                     'lerobot==0.4.4'],
+                    ['uv','pip','install','--python',python,'--default-index','https://mirrors.aliyun.com/pypi/simple',
+                     'datasets>=4,<5','huggingface-hub>=0.34.2,<0.36','av>=15,<16',
+                     'wandb>=0.24,<0.25','gymnasium>=1.1.1,<2',
+                     'pyserial>=3.5,<4','numpy==1.26.4'],
+                    ['uv','pip','install','--python',python,'--no-deps','--default-index','https://mirrors.aliyun.com/pypi/simple',
+                     'rerun-sdk==0.23.1']]
     else:
         raise ValueError(method)
     import shlex
