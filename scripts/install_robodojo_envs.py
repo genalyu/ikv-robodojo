@@ -52,6 +52,7 @@ def start(method):
             common + ['--no-build-isolation','-r',str(base)],
             common + ['--no-build-isolation','-r',str(locked)],
             ['uv','pip','install','--python',python,'--no-deps','--no-build-isolation','-e',str(REPO/'OpenWAM')],
+            ['uv','pip','install','--python',python,'--default-index','https://mirrors.aliyun.com/pypi/simple','nvidia-ml-py'],
         ]
     elif method == 'openpi':
         requirements = ROOT/'openpi-locked-requirements.txt'

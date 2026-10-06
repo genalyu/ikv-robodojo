@@ -16,6 +16,7 @@ if [[ "$mode" == ikv ]]; then
 fi
 export ROBODOJO_DM05_DATA_ROOT="$ROBODOJO_ROOT/dm05-official-dataset/robodojo_sim"
 export PATH="$ROBODOJO_ROOT/envs/opendm/bin:$PATH"
+export NO_ALBUMENTATIONS_UPDATE=1
 test -f "$ROBODOJO_DM05_DATA_ROOT/jsonl/index_cache.json"
 test -f "$ROBODOJO_ROOT/norm/dm05/norm_stats.json"
 test -f "$ROBODOJO_ROOT/models/dm05-mem-base/config.json"

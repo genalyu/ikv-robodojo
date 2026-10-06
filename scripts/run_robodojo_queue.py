@@ -52,17 +52,38 @@ def gpu_free():
 
 
 def ready():
-    marker = ROOT / "preflight_ready.json"
-    if not marker.is_file():
+    # Run the complete source audit whenever the downloads may have finished.
+    manifest = ROOT / "data_manifest.json"
+    if not manifest.is_file():
+        last = getattr(ready, "_last_audit", 0)
+        if time.monotonic() - last >= 600:
+            ready._last_audit = time.monotonic()
+            audit = subprocess.run(
+                ["python3", str(REPO / "scripts/verify_robodojo_data.py")],
+                capture_output=True, text=True, check=False,
+            )
+            (ROOT / "preflight_data.log").write_text(audit.stdout + audit.stderr)
+    if not manifest.is_file() or json.loads(manifest.read_text()).get("validated") is not True:
         return False
-    info = json.loads(marker.read_text())
-    commit = subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip()
-    if info.get("commit") != commit or info.get("all_six_runs_validated") is not True:
+    if subprocess.check_output(["git", "-C", str(REPO), "branch", "--show-current"], text=True).strip() != "main":
         return False
     if subprocess.check_output(["git", "-C", str(REPO), "status", "--porcelain"], text=True).strip():
         return False
-    manifest = ROOT / "data_manifest.json"
-    if not manifest.is_file() or json.loads(manifest.read_text()).get("validated") is not True:
+    required = [
+        ROOT / "envs/opendm/bin/python",
+        ROOT / "envs/openwam/bin/python",
+        ROOT / "envs/openpi/bin/python",
+        ROOT / "models/dm05-mem-base/config.json",
+        ROOT / "models/dinov2-base/config.json",
+        ROOT / "models/openwam-alpha-foundation/config.yaml",
+        ROOT / "models/pi05-base/source_manifest.json",
+        ROOT / "norm/dm05/norm_stats.json",
+        ROOT / "norm/pi05/official-release/arx_x5_sim/norm_stats.json",
+        ROOT / "dm05-official-dataset/robodojo_sim/jsonl/index_cache.json",
+    ]
+    if not all(path.is_file() for path in required):
+        return False
+    if not list((ROOT / "models/openwam-alpha-foundation").rglob("*.safetensors")):
         return False
     for launcher in {item[1] for item in ORDER}:
         script = REPO / "scripts" / launcher

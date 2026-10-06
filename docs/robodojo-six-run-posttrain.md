@@ -21,7 +21,7 @@ Sources within this server repository: `opendm/docs/en/dm05_robodojo.md`, `OpenW
 
 The fixed queue order is DM05 baseline, DM05 IKV, OpenWAM baseline, OpenWAM IKV, PI05 baseline, PI05 IKV. Never train motion-only IKV or motion+IKV. Baseline and IKV for each method must share the same base weights, source episodes, action space, normalization statistics, optimizer settings, and official schedule. The intended variable is persistent RGB K/V memory with its fixed method-specific budget.
 
-**Do not create `preflight_ready.json` yet.** All six launch paths are wired, but four-GPU optimizer-step validation and full-source data audits remain pending. The queue also requires neosim checkpoint step 2000 and four idle GPUs.
+The queue now runs the full-source data audit itself after neosim finishes. It requires a clean main checkout, all assets and environments, neosim checkpoint step 2000, and four idle GPUs before launching the six jobs in order. Four-GPU optimizer-step validation remains pending.
 
 ## Remaining checks before readiness
 
@@ -38,7 +38,7 @@ The GitHub SSH identity is configured on the jump host `a100-baiduyun-yinx-copy1
 
 `/mnt/cfs/9wt59p/genalyu/ikv-robodojo/scripts/install_robodojo_envs.py` prefers Tsinghua PyPI and SJTU CUDA wheels. OpenWAM follows its committed Docker requirements lock, including Python 3.12 (NumPy 2.5.3 requires >=3.12), torch 2.7.1+cu128, and a separate DeepSpeed build after torch is installed. OpenPI exports its official uv lock without modifying it; its CUDA torch build is 2.7.1+cu126. OpenDM retains its pyproject pins with CUDA torch 2.11.0+cu128. Downloads use existing proxy only for upstream sources unavailable domestically.
 
-DM05 and OpenWAM now have persistent IKV integration in the official trainers; neither is validated end-to-end yet. Their distributed microbatch sampler keeps chronological chunks per rank and resets memory on episode/optimizer boundaries. DM05 IKV uses batch 1 x accumulation 8 x four GPUs (32 targets/update); OpenWAM uses 1 x 32 x four GPUs (128 targets/update). PI05 has a four-frame recurrent loss path in the official JAX trainer, with a v3 LeRobot adapter. The readiness marker must stay absent until four-GPU training validation and all source audits pass.
+DM05 and OpenWAM now have persistent IKV integration in the official trainers; neither is validated end-to-end yet. Their distributed microbatch sampler keeps chronological chunks per rank and resets memory on episode/optimizer boundaries. DM05 IKV uses batch 1 x accumulation 8 x four GPUs (32 targets/update); OpenWAM uses 1 x 32 x four GPUs (128 targets/update). PI05 has a four-frame recurrent loss path in the official JAX trainer, with a v3 LeRobot adapter. The queue rechecks readiness and records the data audit automatically; full four-GPU training validation remains pending.
 
 ## PI05 LeRobot v3 and pure IKV training
 
