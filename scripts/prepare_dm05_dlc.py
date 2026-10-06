@@ -15,8 +15,9 @@ def main() -> int:
         ROOT / "raw-dlc/data/RoboDojo",
         ROOT / "raw/data/RoboDojo",
     ]
-    source = next((p for p in candidates if len(list(
-        (p / TASK / "arx_x5/data").glob("episode_*.hdf5"))) == 100), None)
+    source = next((p for p in candidates if len(files := list(
+        (p / TASK / "arx_x5/data").glob("episode_*.hdf5"))) == 100
+        and all(file.stat().st_size > 0 for file in files)), None)
     if source is None:
         print("dlc source HDF5 is incomplete", flush=True)
         return 1

@@ -32,6 +32,11 @@ errors = []
 for task in expected:
     if raw[task] != 100:
         errors.append(f'HDF5 {task}: {raw[task]}/100 episodes')
+    else:
+        empty = [str(path) for path in (hdf5_root / task / 'arx_x5/data').glob('episode_*.hdf5')
+                 if path.stat().st_size == 0]
+        if empty:
+            errors.append(f'HDF5 {task}: {len(empty)} empty episodes; first: {empty[:2]}')
     if dm[task] != 100:
         errors.append(f'DM05 JSONL {task}: {dm[task]}/100 episodes')
 dm_missing_video = []
