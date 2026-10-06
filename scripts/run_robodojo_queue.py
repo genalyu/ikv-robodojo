@@ -57,7 +57,20 @@ def ready():
         return False
     info = json.loads(marker.read_text())
     commit = subprocess.check_output(["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True).strip()
-    return info.get("commit") == commit and info.get("all_six_runs_validated") is True
+    if info.get("commit") != commit or info.get("all_six_runs_validated") is not True:
+        return False
+    if subprocess.check_output(["git", "-C", str(REPO), "status", "--porcelain"], text=True).strip():
+        return False
+    manifest = ROOT / "data_manifest.json"
+    if not manifest.is_file() or json.loads(manifest.read_text()).get("validated") is not True:
+        return False
+    for launcher in {item[1] for item in ORDER}:
+        script = REPO / "scripts" / launcher
+        if not script.is_file() or not os.access(script, os.X_OK):
+            return False
+        if "training is not validated; refusing to run" in script.read_text():
+            return False
+    return True
 
 
 def main():
