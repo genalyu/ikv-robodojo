@@ -123,6 +123,12 @@ class DM05ModelConfig(Config):
         config = DM05Config.from_pretrained(self.model_name_or_path)
         for attr, value in self._config_overrides().items():
             setattr(config, attr, value)
+        # Apply attention selection before nested Gemma/SigLIP construction.
+        # Checkpoint configs may request FlashAttention even when the runtime
+        # override selects SDPA; post-load overrides cannot prevent init errors.
+        config.vlm_config.vision_config._attn_implementation = self.vision_attn_implementation
+        config.vlm_config.text_config._attn_implementation = "sdpa"
+        config.action_config._attn_implementation = "sdpa"
         return DM05ForConditionalGeneration.from_pretrained(
             self.model_name_or_path,
             config=config,
