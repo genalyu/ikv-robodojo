@@ -48,7 +48,7 @@ def gpu_free():
         check=True,
     )
     used = [int(line.strip()) for line in result.stdout.splitlines()]
-    return len(used) == 4 and all(x < 2000 for x in used)
+    return len(used) >= 4 and all(x < 2000 for x in used[:4])
 
 
 def ready(run_id):
@@ -90,8 +90,8 @@ def ready(run_id):
         return False
     required = [
         ROOT / "envs/opendm/bin/python",
-        ROOT / "envs/openwam/bin/python",
-        ROOT / "envs/openpi/bin/python",
+        
+        
         ROOT / "models/dm05-mem-base/config.json",
         ROOT / "models/dinov2-base/config.json",
         ROOT / "models/openwam-alpha-foundation/config.yaml",
@@ -100,6 +100,7 @@ def ready(run_id):
         ROOT / "norm/pi05/official-release/arx_x5_sim/norm_stats.json",
         ROOT / "dm05-official-dataset/robodojo_sim/jsonl/index_cache.json",
     ]
+    required.append(ROOT / ("envs/openwam/bin/python" if run_id.startswith("openwam_") else "envs/openpi/bin/python" if run_id.startswith("pi05_") else "envs/opendm/bin/python"))
     if not all(path.is_file() for path in required):
         return False
     if not list((ROOT / "models/openwam-alpha-foundation").rglob("*.safetensors")):
