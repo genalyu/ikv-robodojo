@@ -27,7 +27,7 @@ def start(method):
                UV_CACHE_DIR=str(ROOT/'uv-cache'), TMPDIR=str(ROOT/'tmp'),
                HTTP_PROXY='http://127.0.0.1:7890', HTTPS_PROXY='http://127.0.0.1:7890',
                NO_PROXY='localhost,127.0.0.1,.tsinghua.edu.cn,.sjtu.edu.cn,.aliyun.com,.modelscope.cn',
-               UV_PYTHON_INSTALL_DIR='/opt/robodojo-python', DS_BUILD_OPS='0', GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.version', GIT_CONFIG_VALUE_0='HTTP/1.1')
+               UV_PYTHON_INSTALL_DIR='/mnt/cfs/9wt59p/genalyu/.local-tools/pythons', DS_BUILD_OPS='0', GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.version', GIT_CONFIG_VALUE_0='HTTP/1.1')
     python = str(ROOT/'envs'/method/'bin/python')
     if method == 'openwam':
         version = subprocess.check_output([python,'-c','import sys; print(sys.version_info[:2])'],text=True).strip()
