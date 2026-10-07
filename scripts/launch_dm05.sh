@@ -5,8 +5,8 @@ source /mnt/cfs/9wt59p/genalyu/ikv-robodojo/scripts/robodojo_env.sh
 if [[ "$mode" != baseline && "$mode" != ikv ]]; then exit 2; fi
 exp=playground/dm05_mem_sft_robodojo_cover_blocks.py
 extra=()
-batch=4
-accum=2
+batch=1
+accum=8
 if [[ "$mode" == ikv ]]; then
   exp=playground/dm05_mem_ikv_rgb_robodojo_cover_blocks.py
   batch=1
@@ -17,6 +17,8 @@ fi
 export ROBODOJO_DM05_DATA_ROOT="$ROBODOJO_ROOT/dm05-official-dataset/robodojo_sim"
 export PATH="$ROBODOJO_ROOT/envs/opendm/bin:$PATH"
 export NO_ALBUMENTATIONS_UPDATE=1
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+export NCCL_DEBUG=WARN
 test -f "$ROBODOJO_DM05_DATA_ROOT/jsonl/index_cache.json"
 test -f "$ROBODOJO_ROOT/norm/dm05/norm_stats.json"
 test -f "$ROBODOJO_ROOT/models/dm05-mem-base/config.json"
