@@ -72,4 +72,3 @@ class ScoreJSONConstraint:
         self.max_tokens=sum(len(value) if kind=="text" else 1 if kind=="space" else 3 for kind,value in stages)+1
     def __call__(self,batch_id,input_ids):
         return self.function(batch_id,input_ids)
-
