@@ -153,7 +153,7 @@ Each is an array of integer scores, aligned exactly with the corresponding visua
         self.model.model.rope_deltas=None
         with patch.object(self.model.model,"get_image_features",side_effect=cached_features):
             generated=self.model.generate(**inputs,max_new_tokens=min(self.max_new_tokens,grammar.max_tokens),
-                do_sample=False,use_cache=True,past_key_values=None,streamer=progress,prefix_allowed_tokens_fn=grammar)
+                do_sample=False,use_cache=True,past_key_values=None,logits_to_keep=1,eos_token_id=self.processor.tokenizer.eos_token_id,streamer=progress,prefix_allowed_tokens_fn=grammar)
         decoded=self.processor.tokenizer.decode(generated[0,ids.shape[1]:],skip_special_tokens=True).strip()
         decoded = unwrap_json_fence(decoded)
         try:
