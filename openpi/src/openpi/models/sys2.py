@@ -94,6 +94,7 @@ class Sys2Client:
         if not endpoint.startswith(("http://", "https://")):
             raise ValueError("Sys2 endpoint must be HTTP(S)")
         self.endpoint, self.task, self.timeout = endpoint.rstrip("/"), task, timeout
+        self._observation_context = []
 
     def call(self, route, payload):
         body = json.dumps(payload, allow_nan=False).encode()
@@ -143,6 +144,15 @@ class Sys2Client:
             result["contact_present"] = binary_contact(contact, n, device)
         return result
 
+    def set_observation_context(self, rows):
+        # Context-only observations never become policy KV candidates.
+        values=[]
+        for row in rows:
+            item={name:row[name] for name in ("frame","time","modality","grid")}
+            validate_candidates([dict(item,id="context",patch=0)])
+            values.append(item)
+        self._observation_context=values
+
     def score(self, candidates, current_time):
         validate_candidates(candidates)
         result={}
@@ -154,6 +164,12 @@ class Sys2Client:
             if key not in seen_context:
                 context_index.append({name:c[name] for name in ("frame","time","modality","grid")})
                 seen_context.add(key)
+        for row in self._observation_context:
+            if row["frame"] not in context_frames:context_frames.append(row["frame"])
+            key=(row["frame"],row["time"],row["modality"],tuple(row["grid"]))
+            if key not in seen_context:
+                context_index.append(dict(row));seen_context.add(key)
+            current_time=max(float(current_time),float(row["time"]))
         for start in range(0,len(candidates),128):
             chunk=candidates[start:start+128]
             output=self.call("/score",dict(task=self.task,current_time=current_time,candidates=chunk,context_frames=context_frames,context_index=context_index))
