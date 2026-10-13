@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 import torch
-from sys2 import validate_candidates, validate_scores, unwrap_json_fence
+from .sys2 import validate_candidates, validate_scores, unwrap_json_fence
 
 
 class QwenSys2:
@@ -141,7 +141,7 @@ Each is an array of integer scores, aligned exactly with the corresponding visua
                 if self.count%128==0:print(f'SCORE_PROGRESS tokens={self.count} seconds={time.monotonic()-started:.1f}',flush=True)
             def end(self):print(f'SCORE_GENERATED tokens={self.count} seconds={time.monotonic()-started:.1f}',flush=True)
         progress=Progress()
-        from score_json import ScoreVectorConstraint as ScoreJSONConstraint
+        from .score_json import ScoreVectorConstraint as ScoreJSONConstraint
         grammar=ScoreJSONConstraint(self.processor.tokenizer,candidates,int(ids.shape[1]))
         features=[f.to(self.device) for f in features]
         inputs["mm_token_type_ids"]=image_mask.long()
@@ -157,7 +157,7 @@ Each is an array of integer scores, aligned exactly with the corresponding visua
         decoded=self.processor.tokenizer.decode(generated[0,ids.shape[1]:],skip_special_tokens=True).strip()
         decoded = unwrap_json_fence(decoded)
         try:
-            from score_json import decode_score_vectors
+            from .score_json import decode_score_vectors
             result=decode_score_vectors(decoded,candidates)
             validate_scores(result,candidates)
         except (ValueError, TypeError) as exc:
