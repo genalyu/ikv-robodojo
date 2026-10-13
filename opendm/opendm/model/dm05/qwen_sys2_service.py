@@ -8,10 +8,11 @@ import base64
 import hashlib
 import io
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 import torch
-from opendm.model.dm05.sys2 import validate_candidates, validate_scores, unwrap_json_fence
+from .sys2 import validate_candidates, validate_scores, unwrap_json_fence
 
 
 class QwenSys2:
@@ -118,6 +119,18 @@ class QwenSys2:
         if ids.shape[1]+self.max_new_tokens>self.max_context:
             raise ValueError(f"complete Sys2 request exceeds context: {ids.shape[1]} input + "
                              f"{self.max_new_tokens} output reserve > {self.max_context}")
+        started=time.monotonic()
+        print(f'SCORE_START candidates={len(candidates)} frames={len(frames)} input_tokens={ids.shape[1]}',flush=True)
+        class Progress:
+            def __init__(self):self.first=True;self.count=0
+            def put(self,value):
+                if self.first:self.first=False;return
+                self.count+=int(value.numel())
+                if self.count%128==0:print(f'SCORE_PROGRESS tokens={self.count} seconds={time.monotonic()-started:.1f}',flush=True)
+            def end(self):print(f'SCORE_GENERATED tokens={self.count} seconds={time.monotonic()-started:.1f}',flush=True)
+        progress=Progress()
+        from .score_json import ScoreJSONConstraint
+        grammar=ScoreJSONConstraint(self.processor.tokenizer,candidates,int(ids.shape[1]))
         features=[f.to(self.device) for f in features]
         inputs["mm_token_type_ids"]=image_mask.long()
         inputs["image_grid_thw"]=torch.cat(grids).to(self.device)
@@ -127,8 +140,8 @@ class QwenSys2:
             return BaseModelOutputWithPooling(pooler_output=tuple(features))
         self.model.model.rope_deltas=None
         with patch.object(self.model.model,"get_image_features",side_effect=cached_features):
-            generated=self.model.generate(**inputs,max_new_tokens=self.max_new_tokens,
-                do_sample=False,use_cache=True,past_key_values=None)
+            generated=self.model.generate(**inputs,max_new_tokens=min(self.max_new_tokens,grammar.max_tokens),
+                do_sample=False,use_cache=True,past_key_values=None,streamer=progress,prefix_allowed_tokens_fn=grammar)
         decoded=self.processor.tokenizer.decode(generated[0,ids.shape[1]:],skip_special_tokens=True).strip()
         decoded = unwrap_json_fence(decoded)
         try:
