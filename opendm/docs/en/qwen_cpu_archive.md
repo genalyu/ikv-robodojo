@@ -11,3 +11,9 @@ Whenever the archive exceeds the GPU budget, every candidate receives a validate
 Qwen decoder state is not persisted. Native vision packets remain immutable in the separate Sys2 feature store. Current task instructions are sent with each request. Episode reset clears the per-stream Sys1 archive; the service's persistent feature store has a separate hard capacity.
 
 All three are inference ablations on official RoboDojo checkpoints. Real score JSON and complete task rollouts must be validated before claiming task performance. Synchronous Qwen scoring can be very slow, especially for large PI05/OpenWAM token grids; runtime logs record candidate counts and latency. Unit tests do not establish task accuracy.
+
+## Exact score output decoding
+
+Install requirements-sys2-format.txt in the scorer environment. Output is constrained at character level with the actual tokenizer vocabulary, preserving merged BPE punctuation. Pretokenized JSON fragments can suppress a normal token such as }, after a score and bias digit continuation.
+
+The grammar allows every integer 0 through 100, requires each requested string ID exactly once in its modality array, and permits at most one whitespace character per JSON boundary to bound output length. Final JSON is independently validated. Format enforcement does not guarantee useful scores. The internal reasoning experiment is disabled in evaluation.
