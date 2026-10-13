@@ -102,7 +102,7 @@ class Sys2Client:
         with urlopen(request, timeout=self.timeout) as response:
             return json.load(response)
 
-    def encode(self, rgb):
+    def encode(self, rgb, grid=(4,4)):
         import base64
         import io
         from PIL import Image
@@ -114,7 +114,7 @@ class Sys2Client:
         buffer = io.BytesIO()
         pixels = (rgb.permute(1,2,0)*255).round().byte().numpy()
         Image.fromarray(pixels, mode="RGB").save(buffer, format="PNG")
-        result = self.call("/encode", {"image": base64.b64encode(buffer.getvalue()).decode()})
+        result = self.call("/encode", {"image": base64.b64encode(buffer.getvalue()).decode(), "grid": list(grid)})
         if type(result.get("frame")) is not int or result["frame"] < 0:
             raise ValueError("invalid encoded frame reference")
         return result["frame"]
@@ -126,7 +126,7 @@ class Sys2Client:
             raise ValueError("empty Sys2 frame or patch grid")
         streams = []
         for video in videos:
-            streams.append(torch.tensor([self.encode(video[:, t]) for t in anchors], dtype=torch.long))
+            streams.append(torch.tensor([self.encode(video[:, t], grid=(h,w)) for t in anchors], dtype=torch.long))
         ids = torch.stack(streams)[:, :, None, None].expand(-1, -1, h, w)
         patches = torch.arange(h*w).reshape(1,1,h,w).expand_as(ids)
         # Visual WAN layout: frame, row, camera, column. Tactile: sensor, frame, row, column.

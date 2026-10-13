@@ -347,8 +347,7 @@ class JointInferenceEngine(BaseInferenceEngine):
                 state=conditions['ikv_kv_state']
                 task=str(conditions.get('sys2_task') or conditions.get('prompt') or 'Perform the instructed manipulation task.')
                 client=Sys2Client(conditions['sys2_endpoint'],task,timeout=600)
-                rgb=torch.from_numpy(np.asarray(conditions['ikv_current_image']).copy()).permute(2,0,1).float()/255
-                state.update(sys2_client=client,sys2_task=task,sys2_frame=client.encode(rgb),sys2_audit=conditions.get('sys2_audit'))
+                state.update(sys2_client=client,sys2_task=task,sys2_frame=None,sys2_audit=conditions.get('sys2_audit'))
                 conditions['ikv_dino_features']=torch.zeros(1,1,1,1)
             descriptors = conditions.get('ikv_dino_features')
             if descriptors is None:

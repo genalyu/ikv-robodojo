@@ -131,6 +131,9 @@ class OpenWAMKVSession:
                 bank = PersistentKVBank(n)
         if bank.capacity != n:
             raise ValueError("frame token budget changed; reset the episode")
+        if self.state.get('sys2_client') is not None and self.state.get('sys2_frame') is None:
+            rgb=torch.from_numpy(np.asarray(self.image).copy()).permute(2,0,1).float()/255
+            self.state['sys2_frame']=self.state['sys2_client'].encode(rgb,grid=(h,w))
         d = self.descriptors.to(device=device,dtype=torch.float32)
         if d.ndim != 4 or d.shape[0] != 1:
             raise ValueError("persistent OpenWAM expects one current DINO grid [1,H,W,D]")

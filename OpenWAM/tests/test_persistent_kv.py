@@ -126,3 +126,30 @@ def test_real_wan_joint_forward_clean_cache_invariant_and_backward():
     loss=train_episode(arch,steps,optimizer)
     assert torch.isfinite(torch.tensor(loss))
     assert not torch.equal(before,dit.patch_embedding.weight)
+
+def test_qwen_index_uses_actual_wan_grid_once_per_generation():
+    import numpy as np
+    from openwam.model.persistent_kv import OpenWAMKVSession
+    class Client:
+        def __init__(self):self.calls=[]
+        def encode(self,rgb,grid):
+            self.calls.append((tuple(rgb.shape),tuple(grid)))
+            return 123+len(self.calls)
+        def score(self,candidates,current_time):
+            return {c["id"]:int(c["time"])*100 for c in candidates}
+    client=Client()
+    holder=dict(sys2_client=client,sys2_task="Pick the target",sys2_frame=None)
+    image=np.zeros((20,24,3),dtype=np.uint8)
+    session=OpenWAMKVSession(holder,torch.zeros(1,1,1,1),image)
+    session.prepare(2,3,"cpu");session.prepare(2,3,"cpu")
+    assert client.calls==[((3,20,24),(2,3))]
+    assert session.bank.grid==(2,3)
+    assert session.plan.metadata["frame"].tolist()==[124]*6
+    payload=torch.zeros(1,6,1,2)
+    k,v=session.plan.merge(0,payload,payload,1)
+    session.layers={0:(k,v)};session.commit(1)
+    holder["sys2_frame"]=None
+    next_session=OpenWAMKVSession(holder,torch.zeros(1,1,1,1),image)
+    next_session.prepare(2,3,"cpu")
+    assert len(client.calls)==2
+    assert next_session.plan.metadata["frame"].tolist()==[125]*6

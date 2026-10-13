@@ -3,13 +3,15 @@
 import argparse
 import json
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from opendm.model.dm05.qwen_patch_scorer import QwenSys2
+
 
 
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--model",required=True)
+    parser.add_argument("--scorer",choices=("grounded","native_roi"),default="grounded")
     parser.add_argument("--feature-directory",required=True)
     parser.add_argument("--host",default="127.0.0.1")
     parser.add_argument("--port",type=int,default=8097)
@@ -18,12 +20,16 @@ def main():
     parser.add_argument("--max-new-tokens",type=int,default=16384)
     parser.add_argument("--max-feature-bytes",type=int,default=8*1024**3)
     args=parser.parse_args()
+    if args.scorer=="native_roi":
+        from opendm.model.dm05.qwen_patch_roi import QwenSys2
+    else:
+        from opendm.model.dm05.qwen_patch_scorer import QwenSys2
     engine=QwenSys2(args.model,args.feature_directory,device=args.device,
         max_context=args.max_context,max_new_tokens=args.max_new_tokens,
         max_feature_bytes=args.max_feature_bytes)
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            body=json.dumps(dict(protocol=engine.protocol,revision=engine.scorer_revision)).encode()
+            body=json.dumps(dict(protocol=engine.protocol,revision=engine.scorer_revision,model=Path(args.model).name,model_provenance=engine.provenance)).encode()
             self.send_response(200 if self.path=="/health" else 404);self.send_header("Content-Type","application/json");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
         def do_POST(self):
             try:
@@ -31,7 +37,7 @@ def main():
                 if not 0<length<=64*1024**2:
                     raise ValueError("request body size invalid")
                 data=json.loads(self.rfile.read(length))
-                if self.path=="/encode": result=engine.encode(data["image"])
+                if self.path=="/encode": result=engine.encode(data["image"],grid=data.get("grid",[4,4])) if args.scorer=="native_roi" else engine.encode(data["image"])
                 elif self.path=="/score": result=engine.score(data)
                 else: raise ValueError("unknown route")
                 status=200

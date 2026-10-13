@@ -120,7 +120,7 @@ class Policy(BasePolicy):
                 image=np.asarray(image)[0]
                 rgb=torch.from_numpy(np.array(image)).permute(2,0,1).float()
                 rgb=rgb/255 if np.issubdtype(image.dtype,np.integer) else (rgb+1)/2
-                refs.extend([client.encode(rgb)]*(side*side))
+                refs.extend([client.encode(rgb, grid=(side,side))]*(side*side))
             ids=bank.generation*n+torch.arange(n)
             plan=bank.plan(ids,torch.tensor(refs)[:,None],torch.full((n,),float(bank.generation)))
             ck,cv=cache
