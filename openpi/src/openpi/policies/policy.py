@@ -47,6 +47,10 @@ class Policy(BasePolicy):
                           Only relevant when is_pytorch=True.
             is_pytorch: Whether the model is a PyTorch model. If False, assumes JAX model.
         """
+        import os
+        self._sys2_endpoint=os.environ.get("ROBODOJO_IKV_SYS2_ENDPOINT")
+        self._qwen_bank=None
+        self._qwen_prefill=nnx_utils.module_jit(model.qwen_prefill) if self._sys2_endpoint else None
         self._model = model
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
@@ -96,7 +100,42 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
-        if not self._is_pytorch_model and self._single_frame_ikv:
+        if self._sys2_endpoint:
+            from openpi.models.qwen_archive import QwenArchiveBank
+            from openpi.models.sys2 import Sys2Client
+            task=str(obs.get("prompt") or "Perform the instructed manipulation task.")
+            n=int(self._model.ikv_history_capacity)
+            camera_images={name:observation.images[name] for name in _model.IMAGE_KEYS}
+            count=len(camera_images)
+            side=int((n//count)**0.5)
+            if side*side*count!=n:raise ValueError("Qwen visual budget does not match camera grids")
+            client=Sys2Client(self._sys2_endpoint,task,timeout=600)
+            if self._qwen_bank is None:
+                self._qwen_bank=QwenArchiveBank(n,client,task,grid=(side,side),protect_current=False)
+            bank=self._qwen_bank
+            cache,mask=self._qwen_prefill(observation)
+            refs=[]
+            for image in camera_images.values():
+                image=np.asarray(image)[0]
+                rgb=torch.from_numpy(np.array(image)).permute(2,0,1).float()
+                rgb=rgb/255 if np.issubdtype(image.dtype,np.integer) else (rgb+1)/2
+                refs.extend([client.encode(rgb)]*(side*side))
+            ids=bank.generation*n+torch.arange(n)
+            plan=bank.plan(ids,torch.tensor(refs)[:,None],torch.full((n,),float(bank.generation)))
+            ck,cv=cache
+            k=torch.from_numpy(np.array(ck[:,:,:n],dtype=np.float32))
+            v=torch.from_numpy(np.array(cv[:,:,:n],dtype=np.float32))
+            if ck.dtype==jnp.bfloat16:k=k.to(torch.bfloat16)
+            elif ck.dtype==jnp.float16:k=k.to(torch.float16)
+            if cv.dtype==jnp.bfloat16:v=v.to(torch.bfloat16)
+            elif cv.dtype==jnp.float16:v=v.to(torch.float16)
+            mk,mv=plan.merge(0,k,v,2)
+            selected=(jnp.asarray(mk.float().numpy(),dtype=ck.dtype),jnp.asarray(mv.float().numpy(),dtype=cv.dtype))
+            action_cache=(jnp.concatenate((selected[0],ck[:,:,n:]),axis=2),jnp.concatenate((selected[1],cv[:,:,n:]),axis=2))
+            actions,_=self._sample_actions_single_frame_ikv(sample_rng_or_pytorch_device,observation,None,external_cache=(action_cache,mask),**sample_kwargs)
+            jax.block_until_ready(actions)
+            bank.commit(plan,{0:(mk,mv)},1)
+        elif not self._is_pytorch_model and self._single_frame_ikv:
             actions, new_state = self._sample_actions_single_frame_ikv(
                 sample_rng_or_pytorch_device, observation, self._ikv_state, **sample_kwargs)
             # Publish only after the complete JIT call succeeds.
@@ -118,6 +157,7 @@ class Policy(BasePolicy):
 
     def reset_ikv(self):
         self._ikv_state = None
+        self._qwen_bank = None
 
     @property
     def metadata(self) -> dict[str, Any]:

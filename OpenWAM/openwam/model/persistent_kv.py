@@ -124,13 +124,17 @@ class OpenWAMKVSession:
             return
         bank = self.state.get('bank')
         if bank is None:
-            bank = PersistentKVBank(n)
+            if self.state.get('sys2_client') is not None:
+                from openwam.model.qwen_archive import QwenArchiveBank
+                bank = QwenArchiveBank(n,self.state['sys2_client'],self.state['sys2_task'],grid=(h,w),protect_current=False,audit=self.state.get('sys2_audit'))
+            else:
+                bank = PersistentKVBank(n)
         if bank.capacity != n:
             raise ValueError("frame token budget changed; reset the episode")
         d = self.descriptors.to(device=device,dtype=torch.float32)
         if d.ndim != 4 or d.shape[0] != 1:
             raise ValueError("persistent OpenWAM expects one current DINO grid [1,H,W,D]")
-        d = F.adaptive_avg_pool2d(d.permute(0,3,1,2),(h,w)).flatten(2).transpose(1,2)[0]
+        d = (torch.full((n,1),self.state['sys2_frame'],device=device) if self.state.get('sys2_client') is not None else F.adaptive_avg_pool2d(d.permute(0,3,1,2),(h,w)).flatten(2).transpose(1,2)[0])
         rgb = torch.as_tensor(np.asarray(self.image).copy(),device=device).permute(2,0,1).float()/255
         previous = self.state.get('rgb')
         motion = torch.ones(n,device=device) if previous is None else F.adaptive_avg_pool2d((rgb-previous.to(device)).abs().mean(0)[None,None],(h,w)).flatten()

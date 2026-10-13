@@ -287,6 +287,11 @@ class Pi0(_model.BaseModel):
         state=(selected_k,selected_v,selected_index,birth,latest,generation)
         return action_cache, action_prefix_mask, state
 
+    def qwen_prefill(self, observation):
+        observation = _model.preprocess_observation(None, observation, train=False, include_memory=False)
+        cache,mask,_ = self._ikv_prefill(observation,None)
+        return cache,mask
+
     def compute_loss_single_frame_ikv(self, rng, observation, actions, ikv_state=None):
         """Native flow matching loss with the inference selector and detached prior state."""
         if not self.ikv_single_frame:
@@ -320,6 +325,7 @@ class Pi0(_model.BaseModel):
         observation: _model.Observation,
         ikv_state=None,
         *,
+        external_cache=None,
         num_steps: int | at.Int[at.Array, ""] = 10,
         noise: at.Float[at.Array, "b ah ad"] | None = None,
     ):
@@ -342,7 +348,11 @@ class Pi0(_model.BaseModel):
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
-        action_cache, action_prefix_mask, state = self._ikv_prefill(observation, ikv_state)
+        if external_cache is None:
+            action_cache, action_prefix_mask, state = self._ikv_prefill(observation, ikv_state)
+        else:
+            action_cache,action_prefix_mask=external_cache
+            state=None
         prefix_len = action_prefix_mask.shape[1]
         def step(carry):
             x_t,time=carry

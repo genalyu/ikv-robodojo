@@ -341,6 +341,15 @@ class JointInferenceEngine(BaseInferenceEngine):
         if conditions.get('ikv_kv_state') is not None:
             from openwam.model.persistent_kv import OpenWAMKVSession
             from openwam.model.ikv_dino import encode_dino_grid
+            if conditions.get('sys2_endpoint'):
+                from openwam.model.sys2 import Sys2Client
+                import numpy as np
+                state=conditions['ikv_kv_state']
+                task=str(conditions.get('sys2_task') or conditions.get('prompt') or 'Perform the instructed manipulation task.')
+                client=Sys2Client(conditions['sys2_endpoint'],task,timeout=600)
+                rgb=torch.from_numpy(np.asarray(conditions['ikv_current_image']).copy()).permute(2,0,1).float()/255
+                state.update(sys2_client=client,sys2_task=task,sys2_frame=client.encode(rgb),sys2_audit=conditions.get('sys2_audit'))
+                conditions['ikv_dino_features']=torch.zeros(1,1,1,1)
             descriptors = conditions.get('ikv_dino_features')
             if descriptors is None:
                 path = conditions.get('ikv_dino_model_path')
