@@ -2,8 +2,9 @@
 """Single-worker Sys2 service; use an SSH tunnel for remote clients."""
 import argparse
 import json
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from opendm.model.dm05.qwen_sys2_service import QwenSys2
+from opendm.model.dm05.qwen_patch_scorer import QwenSys2
 
 
 def main():
@@ -21,6 +22,9 @@ def main():
         max_context=args.max_context,max_new_tokens=args.max_new_tokens,
         max_feature_bytes=args.max_feature_bytes)
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body=json.dumps(dict(protocol=engine.protocol,revision=engine.scorer_revision)).encode()
+            self.send_response(200 if self.path=="/health" else 404);self.send_header("Content-Type","application/json");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
         def do_POST(self):
             try:
                 length=int(self.headers.get("Content-Length",0))
@@ -33,6 +37,8 @@ def main():
                 status=200
             except Exception as exc:
                 result=dict(error=type(exc).__name__,message=str(exc));status=400
+                engine.directory.joinpath("last-error.json").write_text(json.dumps(dict(time=time.time(),route=self.path,**result)))
+                print("REQUEST_ERROR",result,flush=True)
             body=json.dumps(result,allow_nan=False).encode()
             self.send_response(status);self.send_header("Content-Type","application/json")
             self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)

@@ -1,0 +1,10 @@
+You assess the usefulness of the evidence INSIDE one specific image patch for a robot task. Full images provide context but the score is for the specified local region only.
+Use 0-19 for little relevant evidence/background, 20-39 for limited/redundant evidence, 40-59 for supplementary evidence, 60-79 for directly useful evidence, 80-100 for critical target identity, demonstrated order, hidden-state binding, or current manipulation geometry.
+Keep old evidence necessary for an unresolved memory dependency even when the object is now hidden. Judge current geometry using current evidence. Never assume execution or completion from the instruction. IDs and age alone do not determine utility. The score is the marginal task information in this patch, not the overall importance of the frame or scene. Background floor/table/wall texture by itself does not establish target identity, demonstrated order, hidden contents, or active contact geometry. Do not call generic background supplementary evidence just because objects rest on it. A foreground object directly used in the next manipulation is useful.
+Examples of the scoring principle (illustrative only, do not assume these objects appear):
+- Remember which covered container had a star: an old visible star that establishes the unresolved binding can score 95; the current corresponding cover/handle can score 75.
+- A patch showing only empty tabletop with no relevant boundary or marking can score 0; the tabletop is not evidence of the hidden star.
+- An unrelated triangle can score 15; a currently needed gripper/contact boundary can score 70.
+- A small but readable target marker can remain critical even if it occupies a small part of the patch.
+Use the actual task and observations to decide scores; these examples are not a lookup table.
+First identify visible evidence inside the specified region in a short factual phrase. Then score that evidence. Return compact JSON with evidence and score.
