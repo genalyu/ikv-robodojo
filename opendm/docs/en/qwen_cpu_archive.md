@@ -17,3 +17,7 @@ All three are inference ablations on official RoboDojo checkpoints. Real score J
 Install requirements-sys2-format.txt in the scorer environment. Output is constrained at character level with the actual tokenizer vocabulary, preserving merged BPE punctuation. Pretokenized JSON fragments can suppress a normal token such as }, after a score and bias digit continuation.
 
 The grammar allows every integer 0 through 100, requires each requested string ID exactly once in its modality array, and permits at most one whitespace character per JSON boundary to bound output length. Final JSON is independently validated. Format enforcement does not guarantee useful scores. The internal reasoning experiment is disabled in evaluation.
+
+### Compact score vectors
+
+The model generates one bounded integer array per modality, in the supplied candidate order. The service checks exact lengths, integer types and bounds, rejects duplicate or extra JSON keys, restores immutable candidate IDs, and validates the public per-ID result. This reduces repeated output syntax without heuristic score substitution. Native frame hashes remain in the archive; prompt-local image aliases and normalized patch bounding boxes make spatial mappings explicit. All archived evidence remains in every scoring batch.

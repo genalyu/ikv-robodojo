@@ -72,3 +72,42 @@ class ScoreJSONConstraint:
         self.max_tokens=sum(len(value) if kind=="text" else 1 if kind=="space" else 3 for kind,value in stages)+1
     def __call__(self,batch_id,input_ids):
         return self.function(batch_id,input_ids)
+
+class ScoreVectorConstraint(ScoreJSONConstraint):
+    def __init__(self,tokenizer,candidates,prompt_length):
+        stages=[]
+        def atom(text):stages.extend((("text",text),("space",None)))
+        atom("{");atom('"visual_scores"');atom(":");atom("[")
+        for modality in ("visual","tactile"):
+            if modality=="tactile":
+                atom("]");atom(",");atom('"tactile_scores"');atom(":");atom("[")
+            for i,c in enumerate(x for x in candidates if x["modality"]==modality):
+                if i:atom(",")
+                stages.extend((("score",None),("space",None)))
+        atom("]");atom("}")
+        self.stages=tuple(stages)
+        key=id(tokenizer)
+        if key not in _DATA:_DATA[key]=build_token_enforcer_tokenizer_data(tokenizer)
+        self.function=build_transformers_prefix_allowed_tokens_fn(_DATA[key],ExactScoreParser(self.stages))
+        self.max_tokens=sum(len(v) if k=="text" else 1 if k=="space" else 3 for k,v in stages)+1
+
+def decode_score_vectors(text,candidates):
+    def unique(pairs):
+        output={}
+        for key,value in pairs:
+            if key in output:raise ValueError("Duplicate compact score key")
+            output[key]=value
+        return output
+    raw=json.loads(text,object_pairs_hook=unique)
+    if not isinstance(raw,dict) or set(raw)!={"visual_scores","tactile_scores"}:
+        raise ValueError("Invalid compact score object")
+    result={}
+    for modality in ("visual","tactile"):
+        rows=[c for c in candidates if c["modality"]==modality]
+        values=raw[modality+"_scores"]
+        if not isinstance(values,list) or len(values)!=len(rows):
+            raise ValueError("Missing or extra compact score positions")
+        if any(type(value) is not int or not 0<=value<=100 for value in values):
+            raise ValueError("Invalid compact score value")
+        result[modality+"_scores"]=[dict(id=c["id"],score=value) for c,value in zip(rows,values)]
+    return result

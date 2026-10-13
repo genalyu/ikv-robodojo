@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 import torch
-from .sys2 import validate_candidates, validate_scores, unwrap_json_fence
+from sys2 import validate_candidates, validate_scores, unwrap_json_fence
 
 
 class QwenSys2:
@@ -92,6 +92,7 @@ class QwenSys2:
         frames=request.get("context_frames",list(dict.fromkeys(c["frame"] for c in candidates)))
         if any(type(f) is not int or f<0 for f in frames) or len(frames)!=len(set(frames)):raise ValueError("invalid context frame references")
         if not set(c["frame"] for c in candidates)<=set(frames):raise ValueError("context omits candidate evidence")
+        aliases={frame:i for i,frame in enumerate(frames)}
         features,grids,content=[],[],[]
         for frame in frames:
             packet=torch.load(self.directory/(str(frame)+".pt"),map_location="cpu",weights_only=True)
@@ -99,15 +100,26 @@ class QwenSys2:
                 raise ValueError("Qwen feature/model provenance mismatch")
             features.append(packet["features"])
             grids.append(packet["grid"])
-            content.append(dict(type="text",text=f"Frame {frame}:"))
+            content.append(dict(type="text",text=f"Frame {aliases[frame]}:"))
             # Native placeholder expansion, exactly one token per merger output.
             content.append(dict(type="text",text="<|vision_start|>"+
                 "<|image_pad|>"*len(features[-1])+"<|vision_end|>"))
-        metadata=dict(task=request["task"],current_time=request["current_time"],context_index=request.get("context_index",[]),
-            visual_candidates=[c for c in candidates if c["modality"]=="visual"],
-            tactile_candidates=[c for c in candidates if c["modality"]=="tactile"])
+        def model_candidate(candidate):
+            row=dict(candidate)
+            row["frame"]=aliases[candidate["frame"]]
+            h,w=candidate["grid"];r,c=divmod(candidate["patch"],w)
+            row.update(row=r,column=c,box_norm_1000=[round(c*1000/w),round(r*1000/h),round((c+1)*1000/w),round((r+1)*1000/h)])
+            return row
+        context_index=[dict(entry,frame=aliases[entry["frame"]]) for entry in request.get("context_index",[])]
+        metadata=dict(task=request["task"],current_time=request["current_time"],context_index=context_index,
+            visual_candidates=[model_candidate(c) for c in candidates if c["modality"]=="visual"],
+            tactile_candidates=[model_candidate(c) for c in candidates if c["modality"]=="tactile"])
         content.append(dict(type="text",text=json.dumps(metadata,separators=(",",":"),allow_nan=False)))
-        messages=[dict(role="system",content=self.prompt),dict(role="user",content=content)]
+        prompt=self.prompt.split("[Output Requirements]")[0]+"\nSpatial metadata gives row, column and box_norm_1000 [left,top,right,bottom] for the candidate region; coordinates run from 0 to 1000 within the corresponding full image. Score that region using the whole historical evidence.\n"+"""[Output Requirements]
+Return only valid JSON with visual_scores and tactile_scores.
+Each is an array of integer scores, aligned exactly with the corresponding visual_candidates or tactile_candidates in the supplied order. Return exactly one integer 0 through 100 for each candidate. The service retains the candidate IDs and attaches them to your scores. Do not return IDs, commentary, omitted scores, or extra entries.
+"""
+        messages=[dict(role="system",content=prompt),dict(role="user",content=content)]
         text=self.processor.apply_chat_template(messages,tokenize=False,
             add_generation_prompt=True,enable_thinking=False)
         inputs=self.processor.tokenizer(text,return_tensors="pt",add_special_tokens=False).to(self.device)
@@ -129,7 +141,7 @@ class QwenSys2:
                 if self.count%128==0:print(f'SCORE_PROGRESS tokens={self.count} seconds={time.monotonic()-started:.1f}',flush=True)
             def end(self):print(f'SCORE_GENERATED tokens={self.count} seconds={time.monotonic()-started:.1f}',flush=True)
         progress=Progress()
-        from .score_json import ScoreJSONConstraint
+        from score_json import ScoreVectorConstraint as ScoreJSONConstraint
         grammar=ScoreJSONConstraint(self.processor.tokenizer,candidates,int(ids.shape[1]))
         features=[f.to(self.device) for f in features]
         inputs["mm_token_type_ids"]=image_mask.long()
@@ -145,12 +157,13 @@ class QwenSys2:
         decoded=self.processor.tokenizer.decode(generated[0,ids.shape[1]:],skip_special_tokens=True).strip()
         decoded = unwrap_json_fence(decoded)
         try:
-            validate_scores(decoded,candidates)
+            from score_json import decode_score_vectors
+            result=decode_score_vectors(decoded,candidates)
+            validate_scores(result,candidates)
         except (ValueError, TypeError) as exc:
             (self.directory / "last-invalid-response.json").write_text(json.dumps(
                 dict(response=decoded,request=request),indent=2))
             raise ValueError("Qwen returned invalid score JSON; see last-invalid-response.json") from exc
-        result=json.loads(decoded)
         with (self.directory / "scores.jsonl").open("a") as audit:
             audit.write(json.dumps(dict(request_sha256=hashlib.sha256(canonical.encode()).hexdigest(),
                 current_time=request["current_time"], candidates=len(candidates),
