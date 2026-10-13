@@ -138,6 +138,16 @@ def splice_dm05_kv(model, cache, input_ids, attention_mask, history_mask, reques
     oldpos = (mask_history_pad_tokens_in_attention(input_ids,attention_mask).cumsum(-1)-1).clamp_min(0)
     newpos = (mask_history_pad_tokens_in_attention(ids,attention_mask).cumsum(-1)-1).clamp_min(0)
     lm = model.model.vlm.model.language_model
+    from transformers.cache_utils import DynamicCache
+    # Training's VLADynamicCache deliberately stores full layers. Only the
+    # inference DynamicCache uses baseline sliding-window physical retention.
+    restore_sliding = isinstance(cache, DynamicCache)
+    same_positions = torch.equal(oldpos, newpos)
+    same_selection = (
+        same_positions and bool(plan.fresh.all())
+        and torch.equal(plan.source.cpu(), torch.arange(len(fresh_positions)))
+        and torch.equal(dest, fresh_positions)
+    )
     layers = {}
     for i,layer in enumerate(cache.layers):
         if layer.keys.shape[-2] != input_ids.shape[1]:
@@ -149,10 +159,23 @@ def splice_dm05_kv(model, cache, input_ids, attention_mask, history_mask, reques
         freshv = layer.values.index_select(-2,fresh_positions)
         mk,mv = plan.merge(i,freshk,freshv,-2)
         layers[i] = (mk,mv)
-        # index_copy is differentiable for refreshed K/V; old memory is detached.
-        raw = raw.index_copy(-2,dest,mk)
-        layer.keys = _rotate(raw,lm.rotary_emb,newpos,kind).to(key_dtype)
-        layer.values = layer.values.index_copy(-2,dest,mv)
+        # Preserve native tensors exactly when the selected window is unchanged.
+        # In changed selections, do not round-trip unrelated current/text keys
+        # through inverse RoPE unless their positions actually change.
+        if not same_selection:
+            if same_positions:
+                selected_keys = _rotate(mk,lm.rotary_emb,newpos.index_select(-1,dest),kind).to(key_dtype)
+                layer.keys = layer.keys.index_copy(-2,dest,selected_keys)
+            else:
+                raw = raw.index_copy(-2,dest,mk)
+                layer.keys = _rotate(raw,lm.rotary_emb,newpos,kind).to(key_dtype)
+            layer.values = layer.values.index_copy(-2,dest,mv)
+        if restore_sliding and kind == "sliding_attention":
+            # Match Transformers DynamicSlidingWindowLayer after prefix prefill.
+            retained = int(lm.config.sliding_window) - 1
+            if retained <= 0:raise ValueError("invalid baseline sliding-window size")
+            layer.keys = layer.keys[..., -retained:, :]
+            layer.values = layer.values[..., -retained:, :]
     return ids,(bank,plan,layers,len(cache.layers))
 
 
