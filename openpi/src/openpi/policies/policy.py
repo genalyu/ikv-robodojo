@@ -49,6 +49,7 @@ class Policy(BasePolicy):
         """
         import os
         self._sys2_endpoint=os.environ.get("ROBODOJO_IKV_SYS2_ENDPOINT")
+        self._sys2_audit=os.environ.get("ROBODOJO_IKV_AUDIT")
         self._qwen_bank=None
         self._qwen_prefill=nnx_utils.module_jit(model.qwen_prefill) if self._sys2_endpoint else None
         self._model = model
@@ -111,7 +112,7 @@ class Policy(BasePolicy):
             if side*side*count!=n:raise ValueError("Qwen visual budget does not match camera grids")
             client=Sys2Client(self._sys2_endpoint,task,timeout=600)
             if self._qwen_bank is None:
-                self._qwen_bank=QwenArchiveBank(n,client,task,grid=(side,side),protect_current=False)
+                self._qwen_bank=QwenArchiveBank(n,client,task,grid=(side,side),protect_current=False,audit=self._sys2_audit)
             bank=self._qwen_bank
             cache,mask=self._qwen_prefill(observation)
             refs=[]
