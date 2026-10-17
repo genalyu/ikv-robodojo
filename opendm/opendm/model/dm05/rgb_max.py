@@ -81,10 +81,12 @@ class RGBMaxClient:
         raise RuntimeError('unreachable')
 
 class PeriodicRGBBank(QwenArchiveBank):
-    def __init__(self,capacity,client,task,interval=4,**kwargs):
+    def __init__(self,capacity,client,task,interval=4,intermediate_policy="cached_score",**kwargs):
         super().__init__(capacity,client,task,protect_current=False,**kwargs)
         if type(interval)is not int or interval<2:raise ValueError('enabled interval must be >=2')
+        if intermediate_policy not in ("fifo","cached_score"):raise ValueError("unknown intermediate eviction policy")
         self.interval=interval;self.last_management=None
+        self.intermediate_policy=intermediate_policy;self.cached_scores={}
     @torch.no_grad()
     def plan(self,ids,descriptors,times,motion=None,contact=None):
         ids=torch.as_tensor(ids).detach().cpu().long().flatten();frames=torch.as_tensor(descriptors).detach().cpu().long().flatten();t=torch.as_tensor(times).detach().cpu().float().flatten()
@@ -95,21 +97,40 @@ class PeriodicRGBBank(QwenArchiveBank):
         source=torch.cat((keepold,usefresh));fresh=torch.cat((torch.zeros(len(keepold),dtype=torch.bool),torch.ones(len(ids),dtype=torch.bool)))
         now=float(t.max()) if len(t) else 0.;due=self.last_management is None or now-self.last_management>=self.interval
         contended=len(meta['ids'])>self.capacity;before=time.monotonic()
+        next_scores=dict(self.cached_scores);protected_new=0
+        # Unscored evidence cannot all fit: obtain real scores rather than
+        # inventing low scores or silently discarding protected observations.
+        if contended and self.intermediate_policy=="cached_score" and not next_scores:due=True
         if due and contended:
             candidates=[dict(id=str(int(uid)),time=float(tm),modality='visual',frame=int(frame),patch=int(uid)%16,grid=[4,4]) for uid,tm,frame in zip(meta['ids'],meta['t'],meta['frame'])]
-            scores=self.client.score(candidates,now);values=torch.tensor([scores[str(int(uid))] for uid in meta['ids']])
+            scores=self.client.score(candidates,now)
+            next_scores={int(uid):float(scores[str(int(uid))]) for uid in meta['ids']}
+            if any(not np.isfinite(v) or not 0<=v<=100 for v in next_scores.values()):raise ValueError('invalid cached importance score')
+            values=torch.tensor([next_scores[int(uid)] for uid in meta['ids']])
             recent=torch.argsort(meta['t'],descending=True,stable=True);chosen=recent[torch.argsort(values[recent],descending=True,stable=True)[:self.capacity]]
         elif due or not contended:chosen=torch.argsort(meta['ids'])[-self.capacity:]
         else:
-            # Refresh resident tokens, admit genuinely new IDs, then FIFO only.
+            # Refresh resident tokens and admit genuinely new IDs; never recall
+            # evicted scored IDs between full-archive management events.
             resident=ids[:0] if self.metadata is None else self.metadata['ids']
             newest=-1 if old is None or not len(oldids) else int(oldids.max())
             eligible=torch.isin(meta['ids'],resident)|(meta['ids']>newest)
-            chosen=eligible.nonzero().flatten();chosen=chosen[torch.argsort(meta['ids'][chosen])][-self.capacity:]
+            chosen=eligible.nonzero().flatten()
+            if self.intermediate_policy=="fifo":
+                chosen=chosen[torch.argsort(meta['ids'][chosen])][-self.capacity:]
+            else:
+                unscored=torch.tensor([int(meta['ids'][i]) not in next_scores for i in chosen],dtype=torch.bool)
+                protected=chosen[unscored];protected_new=len(protected)
+                if protected_new>self.capacity:raise ValueError('unscored observations exceed capacity; shorten scoring interval')
+                ranked=chosen[~unscored]
+                ranked=ranked[torch.argsort(meta['t'][ranked],descending=True,stable=True)]
+                values=torch.tensor([next_scores[int(meta['ids'][i])] for i in ranked])
+                ranked=ranked[torch.argsort(values,descending=True,stable=True)]
+                chosen=torch.cat((protected,ranked[:self.capacity-protected_new]))
         chosen=chosen[torch.argsort(meta['ids'][chosen])]
-        plan=ArchivePlan(self,self.generation,{k:v[chosen] for k,v in meta.items()},source[chosen],fresh[chosen],meta,keepold,usefresh,{},-1);plan.management_time=now if due else self.last_management
+        plan=ArchivePlan(self,self.generation,{k:v[chosen] for k,v in meta.items()},source[chosen],fresh[chosen],meta,keepold,usefresh,{},-1);plan.management_time=now if due else self.last_management;plan.cached_scores=next_scores
         if self.audit:
-            with open(self.audit,'a') as f:f.write(json.dumps(dict(generation=self.generation,now=now,interval=self.interval,management_due=due,scored=bool(due and contended),candidates=len(meta['ids']),selected=len(chosen),ids=meta['ids'][chosen].tolist(),scoring_seconds=time.monotonic()-before))+'\n')
+            with open(self.audit,'a') as f:f.write(json.dumps(dict(generation=self.generation,now=now,interval=self.interval,management_due=due,intermediate_policy=self.intermediate_policy,protected_unscored=protected_new,scored=bool(due and contended),candidates=len(meta['ids']),selected=len(chosen),ids=meta['ids'][chosen].tolist(),scoring_seconds=time.monotonic()-before))+'\n')
         return plan
     def commit(self,plan,layers,expected_layers):
-        super().commit(plan,layers,expected_layers);self.last_management=plan.management_time
+        super().commit(plan,layers,expected_layers);self.last_management=plan.management_time;self.cached_scores=plan.cached_scores

@@ -7,7 +7,7 @@ class Scorer:
         self.calls+=1
         return {r['id']:100 if int(r['id'])<16 else 1 for r in rows}
 def test_periodic_fifo_archive_recall_and_transaction():
-    client=Scorer();bank=PeriodicRGBBank(32,client,'task',interval=4)
+    client=Scorer();bank=PeriodicRGBBank(32,client,'task',interval=4,intermediate_policy='fifo')
     for t in range(9):
         ids=torch.arange(max(0,t-2)*16,(t+1)*16)
         plan=bank.plan(ids,(ids//16)[:,None],(ids//16).float())
@@ -61,3 +61,24 @@ def test_invalid_teacher_assignment_gets_feedback_before_use(tmp_path):
     assert 'empty bounds' in requests[1]['messages'][2]['content']
     assert scores['0']==90 and scores['15']==1
     assert len(list((tmp_path/'requests').glob('*/query*/meta.json')))==1
+
+
+def test_cached_score_evicts_low_score_protects_new_and_commits_atomically():
+    client=Scorer();bank=PeriodicRGBBank(64,client,'task',interval=4)
+    for t in range(6):
+        ids=torch.arange(max(0,t-2)*16,(t+1)*16)
+        plan=bank.plan(ids,(ids//16)[:,None],(ids//16).float())
+        if t==5:
+            # 16 genuinely new IDs survive, plus high-scored earliest frame.
+            assert set(range(16))|set(range(80,96)) <= set(plan.metadata['ids'].tolist())
+            assert len(plan.metadata['ids'])==64
+            assert not set(range(16,32)) & set(plan.metadata['ids'].tolist())
+            assert all(i in bank.cached_scores for i in range(16))
+            assert all(i not in bank.cached_scores for i in range(80,96))
+            before=dict(bank.cached_scores)
+            with pytest.raises(RuntimeError,match='incomplete'):bank.commit(plan,{},1)
+            assert bank.cached_scores==before and bank.last_management==4
+        pair=torch.arange(len(ids),dtype=torch.float32).reshape(1,1,-1,1)
+        merged=plan.merge(0,pair,pair,-2);bank.commit(plan,{0:merged},1)
+    assert set(range(16))<=set(bank.metadata['ids'].tolist())
+    assert client.calls==1
