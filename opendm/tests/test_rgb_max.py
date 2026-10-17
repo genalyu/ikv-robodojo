@@ -34,3 +34,30 @@ def test_full_assignment_and_invalid_bounds():
     with pytest.raises(ValueError):RGBMaxClient.decode(obj,2)
     obj['blocks'][0]['frames']=[0,1];obj['default_score']=True
     with pytest.raises(ValueError):RGBMaxClient.decode(obj,2)
+
+def test_invalid_teacher_assignment_gets_feedback_before_use(tmp_path):
+    import json
+    import numpy as np
+    from unittest.mock import patch
+    (tmp_path/'private').mkdir();(tmp_path/'private/bailian.key').write_text('test-only')
+    (tmp_path/'prompt_visual.txt').write_text('Score the supplied evidence.')
+    client=RGBMaxClient('task',tmp_path)
+    client.register(0,[np.zeros((32,32,3),dtype=np.uint8)]*3)
+    invalid={'default_score':1,'blocks':[{'frames':[0,0],'camera':0,'rows':[0,1],'cols':[0,1],'score':90}]}
+    valid={'default_score':1,'blocks':[{'frames':[0,1],'camera':0,'rows':[0,2],'cols':[0,2],'score':90}]}
+    requests=[]
+    class Response:
+        status_code=200
+        def __init__(self,assignment):self.assignment=assignment
+        def json(self):return {'model':'test','id':'test','choices':[{'finish_reason':'stop','message':{'content':json.dumps(self.assignment)}}]}
+    def transport(*args,**kwargs):
+        requests.append(json.loads(json.dumps(kwargs['json'])))
+        return Response(invalid if len(requests)==1 else valid)
+    candidates=[dict(id=str(i),time=0.,modality='visual',frame=0,patch=i,grid=[4,4]) for i in range(16)]
+    with patch('requests.post',side_effect=transport),patch('time.sleep'):
+        scores=client.score(candidates,0.)
+    assert len(requests)==2
+    assert len(requests[0]['messages'])==2
+    assert 'empty bounds' in requests[1]['messages'][2]['content']
+    assert scores['0']==90 and scores['15']==1
+    assert len(list((tmp_path/'requests').glob('*/query*/meta.json')))==1
