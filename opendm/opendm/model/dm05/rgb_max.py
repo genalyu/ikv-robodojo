@@ -76,6 +76,7 @@ class RGBMaxClient:
             except Exception as e:
                 (out/f'error_{attempt}.json').write_text(json.dumps(dict(error=str(e))))
                 if attempt==3:raise
+                body['messages']=body['messages'][:2]+[dict(role='user',content='Your previous response failed strict validation: '+str(e)+'. Re-evaluate the entire assignment. Every block must have EXACT keys frames,camera,rows,cols,score. Frames/rows/cols are HALF-OPEN [start,end_exclusive]; end MUST be greater than start. A single frame f is [f,f+1], never [f,f]. No extra fields. Do not omit historical frames. Return complete valid JSON only.')]
                 time.sleep(min(20,3*2**attempt))
         raise RuntimeError('unreachable')
 
