@@ -82,3 +82,19 @@ def test_cached_score_evicts_low_score_protects_new_and_commits_atomically():
         merged=plan.merge(0,pair,pair,-2);bank.commit(plan,{0:merged},1)
     assert set(range(16))<=set(bank.metadata['ids'].tolist())
     assert client.calls==1
+
+
+def test_early_score_filters_weak_history_before_capacity_and_no_resurrection():
+    client=Scorer();bank=PeriodicRGBBank(320,client,'task',interval=4,minimum_score=20)
+    for t in range(9):
+        ids=torch.arange(max(0,t-19)*16,(t+1)*16)
+        plan=bank.plan(ids,(ids//16)[:,None],(ids//16).float())
+        if t==4:
+            assert client.calls==2 and len(ids)<bank.capacity
+            assert plan.metadata['ids'].tolist()==list(range(16))
+        if t==5:
+            assert set(plan.metadata['ids'].tolist())==set(range(16))|set(range(80,96))
+        pair=torch.zeros(1,1,len(ids),1);merged=plan.merge(0,pair,pair,-2)
+        bank.commit(plan,{0:merged},1)
+    assert client.calls==3 and bank.metadata['ids'].tolist()==list(range(16))
+    assert len(bank.archive_metadata['ids'])==144
