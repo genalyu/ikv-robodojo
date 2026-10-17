@@ -7,8 +7,10 @@ import requests,torch
 from .qwen_archive import QwenArchiveBank,ArchivePlan
 
 class RGBMaxClient:
-    def __init__(self,task,root,pooling="mean"):
+    def __init__(self,task,root,pooling="mean",image_size=256):
         self.pooling=pooling
+        if type(image_size)is not int or image_size<8 or image_size%8:raise ValueError("RGB size must be a positive multiple of8")
+        self.image_size=image_size
         if pooling not in ("mean","max"):raise ValueError("unknown score pooling")
         self.task=task;self.root=Path(root);self.frames={};self.session=hashlib.sha256((task+str(time.time_ns())).encode()).hexdigest()[:16]
         self.out=self.root/'requests'/self.session;self.out.mkdir(parents=True)
@@ -17,13 +19,14 @@ class RGBMaxClient:
     def register(self,frame,images):
         frame=int(frame)
         if frame in self.frames:return
-        atlas=Image.new('RGB',(864,304),'#20242c');draw=ImageDraw.Draw(atlas)
+        size=self.image_size;cell=size//8;stride=size+32
+        atlas=Image.new('RGB',(stride*3,size+48),'#20242c');draw=ImageDraw.Draw(atlas)
         for c,image in enumerate(images):
-            image=Image.fromarray(np.asarray(image,dtype=np.uint8)).resize((256,256),Image.Resampling.BOX)
-            x=c*288+32;y=48;atlas.paste(image,(x,y));draw.text((x,2),f'frame={frame} camera={c}',fill='white')
+            image=Image.fromarray(np.asarray(image,dtype=np.uint8)).resize((size,size),Image.Resampling.BOX)
+            x=c*stride+32;y=48;atlas.paste(image,(x,y));draw.text((x,2),f'frame={frame} camera={c}',fill='white')
             for k in range(8):
-                draw.text((x+k*32+8,28),str(k),fill='white');draw.text((x-23,y+k*32+9),str(k),fill='white')
-                if k:draw.line((x+k*32,y,x+k*32,y+255),fill='#737373');draw.line((x,y+k*32,x+255,y+k*32),fill='#737373')
+                draw.text((x+k*cell+8,28),str(k),fill='white');draw.text((x-23,y+k*cell+9),str(k),fill='white')
+                if k:draw.line((x+k*cell,y,x+k*cell,y+size-1),fill='#737373');draw.line((x,y+k*cell,x+size-1,y+k*cell),fill='#737373')
         p=self.out/f'frame_{frame:06d}.jpg';atlas.save(p,quality=93,subsampling=0);self.frames[frame]=p
     @staticmethod
     def decode(obj,n):
@@ -50,7 +53,7 @@ class RGBMaxClient:
         for j in range(n):
             data=base64.b64encode(self.frames[j].read_bytes()).decode()
             content.append({'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+data}})
-        user=dict(task=self.task,current_frame=n-1,current_time=n-1,fps=1,images='Chronological original RGB frames; each atlas has cameras top/wrist_l/wrist_r, full-field 256x256, grid 8x8. All observed frames included; no future frames.',grid=dict(rows=8,columns=8,camera_order=['top','wrist_l','wrist_r']),visual_candidates=dict(domain=f'frame 0..{n-1}, camera 0..2, row/column 0..7',total=n*192),scoring_target='At the current frame reassess EVERY historical patch for the robot next action. Do not merely score the latest frame.')
+        user=dict(task=self.task,current_frame=n-1,current_time=n-1,fps=1,images=f'Chronological original RGB frames; each atlas has cameras top/wrist_l/wrist_r, full-field {self.image_size}x{self.image_size}, grid8x8. All observed frames included; no future frames.',grid=dict(rows=8,columns=8,camera_order=['top','wrist_l','wrist_r']),visual_candidates=dict(domain=f'frame 0..{n-1}, camera 0..2, row/column 0..7',total=n*192),scoring_target='At the current frame reassess EVERY historical patch for the robot next action. Do not merely score the latest frame.')
         content.append({'type':'text','text':json.dumps(user,ensure_ascii=False)})
         body=dict(model='qwen3.8-max',messages=[dict(role='system',content=self.prompt),dict(role='user',content=content)],temperature=0,enable_thinking=True,thinking_budget=512,max_tokens=16384)
         out=self.out/f'query_{n-1:06d}_{time.time_ns()}';out.mkdir()
