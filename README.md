@@ -12,6 +12,7 @@ the October 27 local parallel-scorer interface portable. It does not copy an
 older deployment over main or enable diagnostic oracle/primacy interventions.
 [Source reconciliation](docs/DM05_RUNTIME_RECONCILIATION.json) records the boundary.
 
+- [Switchable DM05 window refresh / incremental KV reuse](docs/DM05_KV_UPDATE_MODES.md)
 - [Persistent KV, detached recurrent training and validation scope](opendm/docs/persistent_kv.md)
 - [RGB Qwen-Max archive scoring](opendm/docs/rgb_max.md)
 - [Local parallel scorer and native FM loss](docs/DM05_SCORER_INTEGRATION.md)

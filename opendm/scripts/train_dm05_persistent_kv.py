@@ -17,6 +17,7 @@ def main():
     p.add_argument('--epochs',type=int,default=1)
     p.add_argument('--lr',type=float,default=1e-5)
     p.add_argument('--train-vlm',action='store_true',help='Also train VLM; much higher activation/optimizer memory')
+    p.add_argument('--kv-update-mode',choices=('window_refresh','incremental'),default='window_refresh')
     args=p.parse_args()
     files=sorted(Path(args.episodes).glob('*.pt'))
     if not files:
@@ -42,7 +43,7 @@ def main():
                 def __iter__(self):
                     for step in steps: yield move(step)
             with torch.autocast('cuda',dtype=torch.bfloat16):
-                loss=train_episode(model,Steps(),optimizer)
+                loss=train_episode(model,Steps(),optimizer,update_mode=args.kv_update_mode)
             print(dict(epoch=epoch,episode=path.name,loss=loss),flush=True)
         out=Path(args.output)/f'epoch-{epoch+1}'
         model.save_pretrained(out)
@@ -50,7 +51,7 @@ def main():
             source=Path(args.checkpoint)/name
             if source.is_file():
                 shutil.copy2(source,out/name)
-        (out/'persistent_kv_training.json').write_text(json.dumps(dict(source_checkpoint=args.checkpoint,history_capacity=320,score='T+C+R/(1+live_semantic_repeats)',train_vlm=args.train_vlm,epoch=epoch+1),indent=2))
+        (out/'persistent_kv_training.json').write_text(json.dumps(dict(source_checkpoint=args.checkpoint,history_capacity=320,kv_update_mode=args.kv_update_mode,score='T+C+R/(1+live_semantic_repeats)',train_vlm=args.train_vlm,epoch=epoch+1),indent=2))
         torch.save(optimizer.state_dict(),out/'optimizer.pt')
 
 if __name__=='__main__': main()

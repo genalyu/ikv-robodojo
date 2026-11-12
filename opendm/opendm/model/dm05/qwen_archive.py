@@ -1,7 +1,16 @@
 """Task-conditioned Qwen selection with transactional CPU archive of real KV."""
 from dataclasses import dataclass
-import json,time
+import json,time,math
 import torch
+
+def resolve_query_time(times, old_times=None, query_time=None):
+    latest = max(float(times.max()) if len(times) else 0.,
+                 float(old_times.max()) if old_times is not None and len(old_times) else 0.)
+    now = latest if query_time is None else float(query_time)
+    if not math.isfinite(now) or now < latest:
+        raise ValueError("query_time must be finite and no earlier than history")
+    return now
+
 
 @dataclass
 class ArchivePlan:
@@ -60,7 +69,7 @@ class QwenArchiveBank:
         self.max_bytes=int(max_bytes);self.audit=audit;self.grid=tuple(grid);self.patches=self.grid[0]*self.grid[1];self.protect_current=protect_current
         self.metadata=None;self.archive_metadata=None;self.archive_layers={};self.layers={};self.generation=0
     @torch.no_grad()
-    def plan(self,ids,descriptors,times,motion=None,contact=None):
+    def plan(self,ids,descriptors,times,motion=None,contact=None,query_time=None):
         ids=torch.as_tensor(ids).detach().cpu().long().flatten()
         frames=torch.as_tensor(descriptors).detach().cpu().long().reshape(-1)
         t=torch.as_tensor(times).detach().cpu().float().flatten()
@@ -72,10 +81,11 @@ class QwenArchiveBank:
         freshmeta=dict(ids=ids,frame=frames,t=t,m=m)
         meta={name:value if old is None else torch.cat((old[name][keepold],value)) for name,value in freshmeta.items()}
         source=torch.cat((keepold,usefresh));fresh=torch.cat((torch.zeros(len(keepold),dtype=torch.bool),torch.ones(len(ids),dtype=torch.bool)))
+        now = resolve_query_time(t, meta["t"], query_time)
         candidates=[dict(id=str(int(uid)),time=float(tm),modality='visual',frame=int(frame),patch=int(uid)%self.patches,grid=list(self.grid)) for uid,tm,frame in zip(meta['ids'],meta['t'],meta['frame'])]
         before=time.perf_counter()
         contended=len(candidates)>self.capacity
-        scores=self.client.score(candidates,float(t.max()) if len(t) else 0.) if contended else {}
+        scores=self.client.score(candidates,now) if contended else {}
         if len(candidates)<=self.capacity:
             chosen=torch.argsort(meta['ids'])
         else:

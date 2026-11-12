@@ -6,6 +6,15 @@ The stopped 40% result belongs to the previous feature-memory implementation.
 
 ## DM05 data flow
 
+The flow below describes the historical default `window_refresh` deployment.
+The repository also provides `DM05KVSession(update_mode="incremental")` and
+`--kv-update-mode incremental` in the ordered policy trainer. See
+[mode selection and input contracts](../../docs/DM05_KV_UPDATE_MODES.md).
+Incremental mode encodes only unseen complete historical frames and directly
+reuses committed older KV; the same scoring, budget and RoPE merge are used.
+The bounded bank described below and the optional recallable CPU archive are
+distinct memory policies, and either update mode leaves that choice unchanged.
+
 1. The RoboDojo adapter retains a bounded 21-frame raw ring: 20 eligible historical
    frames plus the current sampled frame. Sampling is 1 Hz, observations/control
    are configured at 25 Hz, and a prediction executes 25 of its 50 generated actions.

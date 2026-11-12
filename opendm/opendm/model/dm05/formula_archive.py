@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from functools import lru_cache
 import torch
 import torch.nn.functional as F
-from .qwen_archive import QwenArchiveBank,ArchivePlan
+from .qwen_archive import QwenArchiveBank,ArchivePlan,resolve_query_time
 from .formula_content import ContentHistory
 
 @lru_cache(maxsize=2)
@@ -42,7 +42,7 @@ class FormulaArchiveBank(QwenArchiveBank):
         self.weights=weights;self.scales=scales
         self.history=ContentHistory(SimpleNamespace(content_threshold=threshold,content_capacity=2048,persistence_scale=8.,class_recency_scale=scales[2]),"cpu")
     @torch.no_grad()
-    def plan(self,ids,descriptors,times,motion=None,contact=None):
+    def plan(self,ids,descriptors,times,motion=None,contact=None,query_time=None):
         ids=torch.as_tensor(ids).detach().cpu().long().flatten()
         features=descriptors.detach().float().cpu()
         t=torch.as_tensor(times).detach().cpu().float().flatten()
@@ -50,6 +50,8 @@ class FormulaArchiveBank(QwenArchiveBank):
         c=torch.zeros_like(t) if contact is None else torch.as_tensor(contact).cpu().float().flatten()
         if len(ids)!=len(d) or len(ids)!=len(t) or len(ids.unique())!=len(ids) or not torch.isfinite(features).all():raise ValueError("invalid formula indices")
         old=self.archive_metadata;oldids=ids[:0] if old is None else old["ids"]
+        # An initial empty step has no descriptor-width contract yet.
+        if not len(oldids): old=None
         keepold=(~torch.isin(oldids,ids)).nonzero().flatten();usefresh=torch.arange(len(ids))
         freshmeta=dict(ids=ids,d=d,q=q,c=c,t=t)
         meta={k:v if old is None else torch.cat((old[k][keepold],v)) for k,v in freshmeta.items()}
@@ -57,7 +59,7 @@ class FormulaArchiveBank(QwenArchiveBank):
         before=time.perf_counter();snapshot=self.history.snapshot()
         try:
             self.history.observe(d,t,torch.ones_like(t))
-            now=float(t.max()) if len(t) else 0.
+            now=resolve_query_time(t,meta["t"],query_time)
             T=torch.exp(-(now-meta["t"]).clamp_min(0)/self.scales[0])
             C=1-torch.exp(-meta["c"]/self.scales[1])
             R=self.history.class_recency(meta["d"],meta["t"])

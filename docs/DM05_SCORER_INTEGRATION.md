@@ -33,6 +33,10 @@ manual success adjustments and machine-specific launch wrappers are not imported
 
 ## Local inference bridge
 
+For episode-local inference with either `window_refresh` (default) or
+`incremental` KV reuse, use [DM05KVSession](DM05_KV_UPDATE_MODES.md). The update
+mode is independent of the bank/scorer and does not pin the first frame.
+
 Install/pin the separate `genalyu/ikv` scorer source on PYTHONPATH, and load the
 matching frozen encoder revision and trained scorer checkpoint:
 
@@ -63,9 +67,10 @@ current observed head frame explicitly when using that protocol.
 This bridge selects only head-camera historical KV. It does not replace current
 three-camera observations or create tactile tokens. It is not by itself an
 XPolicyLab launcher or multi-camera scorer-training data adapter. In particular,
-QwenArchiveBank's query time comes from its candidate metadata: a caller needing
-a separate current-observation query time must pass that causal time consistently
-through its adapter rather than relabel a historical frame as current.
+QwenArchiveBank defaults its query time to the latest candidate time. Pass
+`history_query_time` through `DM05KVSession` (or `query_time` in a raw
+`ikv_kv_request`) for a separate causal current-observation query time, rather
+than relabeling a historical frame as current.
 The October 27 deployment used only historical head features, a known mismatch
 with the scorer's multi-camera training input; preserve that distinction when
 comparing old results with a new current-observation-conditioned protocol.

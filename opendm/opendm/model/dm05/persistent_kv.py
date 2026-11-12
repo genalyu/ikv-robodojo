@@ -34,7 +34,7 @@ class PersistentKVBank:
         self.generation = 0
 
     @torch.no_grad()
-    def plan(self, ids, descriptors, times, motion=None, contact=None):
+    def plan(self, ids, descriptors, times, motion=None, contact=None, query_time=None):
         ids = torch.as_tensor(ids, device=descriptors.device, dtype=torch.long).flatten()
         if len(ids) != len(descriptors) or len(ids.unique()) != len(ids):
             raise ValueError("fresh KV IDs must be unique and aligned with descriptors")
@@ -67,12 +67,13 @@ class PersistentKVBank:
         meta = {key: (value[usefresh] if old is None else torch.cat((old[key].to(value.device)[keepold],value[usefresh]))) for key,value in newmeta.items()}
         src = torch.cat((keepold,usefresh))
         fresh = torch.cat((torch.zeros_like(keepold,dtype=torch.bool),torch.ones_like(usefresh,dtype=torch.bool)))
+        from .qwen_archive import resolve_query_time
+        now = resolve_query_time(t, meta["t"], query_time)
         if len(meta['ids']):
             if newest.any():
                 matches = (meta['d'] @ d[newest].T >= .9) & meta['d'].ne(0).any(-1)[:,None] & d[newest].ne(0).any(-1)[None,:]
                 seen = torch.where(matches,t[newest][None,:],torch.full_like(matches,float('-inf'),dtype=t.dtype)).amax(-1)
                 meta['latest'] = torch.maximum(meta['latest'],seen)
-            now = max(float(t.max()) if len(t) else 0., float(meta['t'].max()))
             # Without novelty, N new tokens each score 2 and always evict all N old
             # tokens (C=0). Penalize semantic repetition against live memory only.
             repeats = torch.zeros_like(meta['t'])
@@ -127,7 +128,8 @@ def splice_dm05_kv(model, cache, input_ids, attention_mask, history_mask, reques
     fresh_positions = history_mask[0].nonzero().flatten()
     if len(fresh_positions) != len(request['ids']):
         raise ValueError("history KV IDs do not match encoded history positions")
-    plan = bank.plan(request['ids'],request['descriptors'],request['times'],request.get('motion'),request.get('contact'))
+    clock = {'query_time': request['query_time']} if 'query_time' in request else {}
+    plan = bank.plan(request['ids'],request['descriptors'],request['times'],request.get('motion'),request.get('contact'), **clock)
     n = len(plan.source)
     ids = input_ids.clone()
     ids[:,slots] = 7
