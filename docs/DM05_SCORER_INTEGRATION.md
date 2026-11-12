@@ -93,8 +93,10 @@ for a frozen DM05 reward and a trainable scorer**. A scorer-RL driver must still
 5. Verify all-kept parity, deterministic common-noise comparisons, real
    counterfactual loss sensitivity, causal data alignment and 16-rank sync.
 
-This reconciliation does not claim the GRPO driver or a cloud run has passed
-these gates. It does not change the native random sampler or policy weights.
+The scorer GRPO implementation is now in `robodojo_training/scorer_rl/`; see its
+README for matched FM draws, isolated archive rollout and distributed checks.
+CPU regressions pass; real-checkpoint/cloud validation is recorded per run.
+Default native FM sampling and policy weights remain unchanged.
 
 ## Validation scope
 

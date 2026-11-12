@@ -27,3 +27,5 @@ acceptance steps. No success-rate or cloud-training claim follows from CPU tests
 Model weights, credentials, machine-specific launchers and evaluation artifacts
 are not distributed in this repository. Use the official model's matching
 normalization, observation/action and image-processing contracts.
+
+Scorer GRPO with frozen DM05 action FM: [workflow and contracts](robodojo_training/scorer_rl/README.md).

@@ -944,15 +944,53 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
                 self, kv_cache, input_ids, attention_mask, history_mask, kwargs["ikv_kv_request"])
         prefix_len = prefix_hidden_states.shape[1]
 
+        fm_loss = self.flow_matching_loss_from_prefix(
+            input_ids, kv_cache, action, action_mask,
+            noise=kwargs.get("fm_noise"), time=kwargs.get("fm_time"))
+        loss = fm_loss
+        if self.precision_policy == FP32_MIXED_PRECISION_POLICY:
+            # FSDP observes wrapped-module backward through returned tensors, while
+            # the action expert also consumes KV tensors written into the cache.
+            loss = loss + prefix_hidden_states.sum(dtype=torch.float32) * 0.0
+
+        if kv_transaction is not None:
+            if not torch.isfinite(loss):
+                raise RuntimeError("nonfinite streaming loss; persistent KV was not committed")
+            from opendm.model.dm05.persistent_kv import commit_dm05
+            commit_dm05(kv_transaction)
+        return DM05OutputWithPast(
+            loss=loss,
+            fm_loss=fm_loss,
+            logits=None,
+            past_key_values=None,
+        )
+
+    def flow_matching_loss_from_prefix(self, input_ids, kv_cache, action, action_mask,
+                                       *, noise=None, time=None):
+        """Native action FM objective, with optional matched draws for counterfactuals.
+
+        The caller owns the cache: suffix evaluation may mutate its layers.
+        No archive is committed here. Default sampling matches training forward.
+        """
+        batch_size = input_ids.shape[0]
+        prefix_len = input_ids.shape[1]
+        if self.precision_policy == FP32_MIXED_PRECISION_POLICY:
+            action = action.to(dtype=MODEL_DTYPE)
         # Step 2: run suffix forward for flow matching.
-        noise = torch.randn_like(action)
+        noise = torch.randn_like(action) if noise is None else noise
         time = (
             torch.distributions.Beta(1.5, 1.0)
             .sample((batch_size,))
             .to(action.device, dtype=action.dtype)
             * 0.999
             + 0.001
-        )
+        ) if time is None else time
+        if noise.shape != action.shape or time.shape != (batch_size,):
+            raise ValueError("FM noise/time shape mismatch")
+        if not torch.isfinite(noise).all() or not torch.isfinite(time).all() or not ((time >= .001) & (time <= 1)).all():
+            raise ValueError("Invalid FM noise/time")
+        if (action_mask.sum(dim=(1, 2)) <= 0).any():
+            raise ValueError("FM action mask is empty")
         time_expanded = time[:, None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * action
         x_t = x_t * action_mask
@@ -1004,23 +1042,7 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
             dim=(1, 2)
         )
         fm_loss = per_sample_fm.mean()
-        loss = fm_loss
-        if self.precision_policy == FP32_MIXED_PRECISION_POLICY:
-            # FSDP observes wrapped-module backward through returned tensors, while
-            # the action expert also consumes KV tensors written into the cache.
-            loss = loss + prefix_hidden_states.sum(dtype=torch.float32) * 0.0
-
-        if kv_transaction is not None:
-            if not torch.isfinite(loss):
-                raise RuntimeError("nonfinite streaming loss; persistent KV was not committed")
-            from opendm.model.dm05.persistent_kv import commit_dm05
-            commit_dm05(kv_transaction)
-        return DM05OutputWithPast(
-            loss=loss,
-            fm_loss=fm_loss,
-            logits=None,
-            past_key_values=None,
-        )
+        return fm_loss
 
     # -----------------------------------------------------------------------
     # Action inference
@@ -1572,7 +1594,10 @@ class DM05ForConditionalGeneration(DMPreTrainedModel):
         (dexbotic-open parity). Current camera images still go through the
         standard Gemma3 multimodal path (``pixel_values`` + ``token_type_ids``).
         """
-        kv_cache = cache_cls(config=None if full_cache else self.model.language_model.config)
+        # VLADynamicCache already retains full layers. Preserve its configured
+        # layer count so Gemma builds the same masks as native FM training.
+        kv_cache = cache_cls(config=None if full_cache and cache_cls is not VLADynamicCache
+                             else self.model.language_model.config)
         prefix_inputs_embeds = None
         vlm_model = self.model.vlm.model
         embed_tokens = vlm_model.get_input_embeddings()
