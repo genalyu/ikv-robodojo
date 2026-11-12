@@ -98,7 +98,15 @@ def test_adapter_refreshes_features_and_isolates_resets(monkeypatch):
     import sys
     import numpy as np
     from collections import deque
-    sys.path.insert(0, "/home/ubuntu/genalyu/RoboDojo")
+    import os
+    import importlib.util
+    # Optional deployment integration lives in a separate XPolicyLab checkout.
+    root = os.environ.get("XPOLICYLAB_PARENT")
+    if root:
+        sys.path.insert(0, root)
+    if importlib.util.find_spec("XPolicyLab") is None:
+        import pytest
+        pytest.skip("Set XPOLICYLAB_PARENT to the parent of an XPolicyLab checkout")
     from XPolicyLab.policy.OpenDM.model import Model
     import opendm.exp.dm05_exp as exp
     import opendm.model.dm05.online_history as online
@@ -155,7 +163,9 @@ def test_training_tokenizer_retains_candidates_but_fixes_context_budget():
                                  is_history=True, include_history_rgb=True, max_history_images=20,
                                  online_history=True)
     frame = Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8))
-    sample = transform({"history_images": [frame] * 35, "images": [], "prompt": "test"})
+    sample = transform({"history_images": [frame] * 35, "images": [], "prompt": "test",
+                        "history_frame_indices": list(range(35)),
+                        "meta_data": {"episode_id": 0, "frame_index": 35, "fps": 25}})
     assert sample["history_frame_counts"].item() == 35
     assert len(sample["history_pixel_values"]) == 35
     assert (sample["input_ids"] == 7).sum() == 320

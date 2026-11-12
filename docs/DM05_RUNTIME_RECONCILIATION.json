@@ -1,0 +1,24 @@
+{
+  "base_commit": "ae9b8a1bc8daa7d078bea9e7af82d76216025eea",
+  "review_date": "2026-11-12",
+  "deployment_snapshot": "DM05 evaluation runtime, October 2026",
+  "preserved_main": [
+    "dm05_arch.py",
+    "persistent_kv.py",
+    "qwen_archive.py"
+  ],
+  "notes": [
+    "Main preserves unchanged/current keys and inference sliding-window retention; the runtime copy predates these safeguards. Do not wholesale overwrite main.",
+    "Parallel scorer integration is extracted from the October 27 inference bridge. Diagnostic oracle/pinned-memory scripts are excluded.",
+    "The unreachable former experimental host was not audited; this is not a claim that every experimental variant was recovered.",
+    "Trailing blank lines normalized in formula_content.py; source and imported digests recorded separately."
+  ],
+  "source_sha256": {
+    "formula_archive.py": "86a4b921eb37f2398752f1d538a6b02f03faff4e66a363188a306a3f9c5e960c",
+    "formula_content.py": "22b870d60815c1d67260fd2a3e9863ea24251557cc3d8273d6768a3e8949874e"
+  },
+  "imported_sha256": {
+    "formula_archive.py": "86a4b921eb37f2398752f1d538a6b02f03faff4e66a363188a306a3f9c5e960c",
+    "formula_content.py": "ca8bfebb519b753b908c788470a64ad4c6338d664a51817fcec89d9258a365d2"
+  }
+}
