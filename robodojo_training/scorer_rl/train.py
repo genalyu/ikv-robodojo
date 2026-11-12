@@ -42,6 +42,12 @@ def main():
     local=int(os.environ.get("LOCAL_RANK",0));device=f"cuda:{local}";torch.cuda.set_device(local)
     if world>1:dist.init_process_group("nccl",timeout=timedelta(hours=2))
     out=Path(cfg["output"]);out.mkdir(parents=True,exist_ok=True)
+    props=torch.cuda.get_device_properties(local)
+    hardware=dict(rank=rank,local_rank=local,world_size=world,host=os.environ.get("HOSTNAME"),
+                  visible_gpus=torch.cuda.device_count(),name=props.name,total_gib=props.total_memory/2**30,
+                  uuid=str(getattr(props,"uuid","unavailable")),torch_version=torch.__version__)
+    atomic_json(out/f"hardware-rank{rank}.json",hardware)
+    print("HARDWARE",json.dumps(hardware),flush=True)
     torch.manual_seed(cfg["seed"]);model,info=load_scorer(cfg["checkpoint"],device)
     reference,_=load_scorer(cfg["checkpoint"],device);reference.eval().requires_grad_(False)
     rows=json.loads(Path(cfg["episodes"]).read_text())

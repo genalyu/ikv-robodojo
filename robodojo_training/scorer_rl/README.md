@@ -18,7 +18,8 @@ No tactile or predicted-video reward is invented for this model.
 
 History is replayed chronologically at 1 Hz. The latest 20 head frames refresh
 native prefix KV; an episode-local CPU archive retains older observed keys.
-The fixed physical prefix has 320 slots. A candidate can choose older archived
+The fixed physical prefix has 320 slots. Patch IDs are `sample_index*16+patch`;
+raw control-frame indices are `sample_index*25`, and times are seconds. A candidate can choose older archived
 keys and newer refreshed keys. All four candidates share one prefix, history
 snapshot, selection budget, Gaussian action noise and Beta(1.5,1) time draw.
 Their cache copies are isolated. Only after all evaluations does a deterministic

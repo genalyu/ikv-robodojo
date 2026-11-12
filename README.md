@@ -20,9 +20,9 @@ older deployment over main or enable diagnostic oracle/primacy interventions.
 
 DM05's `forward()` supports native action flow-matching loss after historical KV
 selection. The existing streaming trainer updates DM05 itself; it is not a
-completed scorer-GRPO trainer. Frozen-DM05 reward integration, matched candidate
-noise/time, causal action data and distributed GPU verification remain separate
-acceptance steps. No success-rate or cloud-training claim follows from CPU tests.
+scorer-GRPO trainer. The separate scorer RL entry uses frozen DM05 reward,
+matched candidate noise/time and causal joint-action data; distributed GPU
+verification is recorded per run. No success-rate or cloud-training claim follows from CPU tests.
 
 Model weights, credentials, machine-specific launchers and evaluation artifacts
 are not distributed in this repository. Use the official model's matching
