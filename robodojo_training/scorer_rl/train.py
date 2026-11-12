@@ -25,12 +25,15 @@ def load_dm05(path,device):
     from opendm.model.dm05.dm05_arch import DM05Config,DM05ForConditionalGeneration
     from opendm.model.dm05.dm05_utils import configure_fp32_precision_runtime
     config=DM05Config.from_pretrained(path)
+    # Nested Transformers configs otherwise silently cast VLM weights to BF16.
+    for component in (config,config.vlm_config,config.vlm_config.text_config,config.vlm_config.vision_config,config.action_config):
+        component.dtype=torch.float32
     config.vlm_config.vision_config._attn_implementation="sdpa"
     config.vlm_config.text_config._attn_implementation="sdpa"
     config.action_config._attn_implementation="sdpa"
     config.vision_attn_implementation="sdpa";config.llm_attn_implementation="sdpa";config.action_attn_implementation="sdpa"
     config.ikv_rgb_enabled=True;config.ikv_motion_only=False;config.chunk_size=50
-    model=DM05ForConditionalGeneration.from_pretrained(path,config=config,dtype=torch.float32).to(device)
+    model=DM05ForConditionalGeneration.from_pretrained(path,config=config,dtype=torch.float32).to(device=device,dtype=torch.float32)
     model.set_precision_policy("fp32_mixed");configure_fp32_precision_runtime()
     model.set_attention_implementation(llm_attn_implementation="sdpa",vision_attn_implementation="sdpa",action_attn_implementation="sdpa",bf16=True)
     return model.eval().requires_grad_(False)
@@ -66,6 +69,8 @@ def main():
     from transformers import AutoProcessor
     processor=AutoProcessor.from_pretrained(cfg["dm05_checkpoint"],local_files_only=True)
     dm=load_dm05(cfg["dm05_checkpoint"],device);reward=FrozenFMReward(dm)
+    if any(p.dtype!=torch.float32 for p in dm.parameters()):raise RuntimeError("DM05 FP32 weight contract violated")
+    atomic_json(out/f"dm05-rank{rank}.json",dict(parameters=sum(p.numel() for p in dm.parameters()),dtype="float32",compute="bfloat16 autocast with protected FP32 action path",revision=cfg["dm05_revision"]))
     optimizer=torch.optim.AdamW(model.parameters(),lr=cfg.get("learning_rate",1e-5))
     weights=SensitivityWeights(decay=.95,minimum=.25,maximum=4.)
     rng=random.Random(cfg["seed"]+rank);torch.manual_seed(cfg["seed"]+rank)

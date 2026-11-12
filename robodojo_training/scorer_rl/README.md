@@ -77,3 +77,11 @@ CPU regressions (2026-11-12): 28 passed, 2 skipped (CUDA parity and external
 XPolicyLab). The native cache construction fix preserves configured layer counts
 for VLADynamicCache, preventing an all-kept FM mask mismatch. Inference
 DynamicCache full-prefix retention is unchanged.
+
+The FP32-weight policy pins dtype on the nested VLM/text/vision/action configs
+before loading, then asserts every DM05 parameter is FP32. A top-level
+`dtype=torch.float32` alone is insufficient with nested Transformers configs.
+Real-checkpoint CPU loading verified 5,829,112,208 FP32 parameters and exact
+source-tensor equality for VLM, vision and action projections, without a lossy
+BF16-to-FP32 round trip. BF16 autocast is still used for compute where permitted
+by the protected native action path.
